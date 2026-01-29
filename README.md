@@ -1,7 +1,8 @@
 # oncoTrack
 
-FrameCapture:
+## Frame Capture
 
+```powershell
 python -m venv venv
 .\venv\Scripts\activate
 pip install PySide6
