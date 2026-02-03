@@ -1,0 +1,211 @@
+# Environment Setup with .env File
+
+The pipeline now uses a `.env` file for configuration, making it much easier to manage settings like your Fiji path.
+
+## 🚀 Quick Setup (3 Steps)
+
+### 1. Run the Setup Script
+
+This will create your `.env` file and install dependencies:
+
+```bash
+cd /home/phillip/code/oncoTrack
+./setup_env.sh
+```
+
+### 2. Edit .env File (If Needed)
+
+The `.env` file is already created with your Fiji path. To modify:
+
+```bash
+nano .env
+```
+
+Or edit it in your IDE. It looks like this:
+
+```bash
+# OncoTrack Pipeline Configuration
+
+# Path to Fiji executable
+FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+```
+
+### 3. Run the Pipeline
+
+```bash
+./test_vid1_frames.sh
+```
+
+That's it! The `.env` file is automatically loaded.
+
+---
+
+## 📝 Manual Setup
+
+If you prefer to set up manually:
+
+### 1. Install Dependencies
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install packages (including python-dotenv)
+pip install -r requirements.txt
+```
+
+### 2. Create .env File
+
+```bash
+# Copy the example
+cp .env.example .env
+
+# Edit with your settings
+nano .env
+```
+
+### 3. Configure Your Fiji Path
+
+Edit `.env` and set:
+
+```bash
+FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+```
+
+**For other systems:**
+- Linux: `/path/to/fiji/ImageJ-linux64`
+- Mac: `/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx`
+- Windows WSL: `/mnt/c/path/to/fiji-win64.exe`
+
+---
+
+## 🔧 How It Works
+
+### Python Code
+
+The `src/config.py` module automatically loads `.env`:
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
+
+# Then uses environment variables
+fiji_path: str = os.environ.get("FIJI_PATH", "fiji")
+```
+
+### Shell Scripts
+
+Shell scripts (`run_pipeline.sh`, `test_vid1_frames.sh`) automatically load `.env`:
+
+```bash
+if [ -f ".env" ]; then
+    export $(cat .env | grep -v '^#' | grep -v '^$' | xargs)
+fi
+```
+
+---
+
+## 📋 Available Configuration Options
+
+You can add these to your `.env` file:
+
+```bash
+# Required: Path to Fiji executable
+FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+
+# Optional: Override database path
+DB_PATH=data/tracking.db
+
+# Optional: Override output directory
+OUTPUT_DIR=output
+
+# Optional: Default log level
+LOG_LEVEL=INFO
+```
+
+---
+
+## ✅ Verify Setup
+
+Run the verification script:
+
+```bash
+./verify_setup.sh
+```
+
+This checks:
+- ✓ Python version
+- ✓ Virtual environment
+- ✓ Required packages
+- ✓ Fiji path from .env
+- ✓ Fiji executable accessibility
+
+---
+
+## 🔒 Security Note
+
+The `.env` file is in `.gitignore` and won't be committed to git. This is intentional because:
+- It contains local paths specific to your machine
+- Different team members may have Fiji installed in different locations
+
+The `.env.example` file IS committed and serves as a template.
+
+---
+
+## 🆘 Troubleshooting
+
+### .env file not loading?
+
+Make sure you're running scripts from the project root:
+
+```bash
+cd /home/phillip/code/oncoTrack
+./test_vid1_frames.sh
+```
+
+### FIJI_PATH not working?
+
+1. Check the path is correct:
+   ```bash
+   ls -la /home/phillip/Fiji/fiji-linux-x64
+   ```
+
+2. Make sure the file is executable:
+   ```bash
+   chmod +x /home/phillip/Fiji/fiji-linux-x64
+   ```
+
+3. Test Fiji directly:
+   ```bash
+   /home/phillip/Fiji/fiji-linux-x64 --version
+   ```
+
+### Still getting "FIJI_PATH not set"?
+
+Manually load the .env file:
+
+```bash
+export $(cat .env | grep -v '^#' | grep -v '^$' | xargs)
+echo $FIJI_PATH
+```
+
+---
+
+## 🔄 Updating Configuration
+
+To change settings, just edit `.env`:
+
+```bash
+nano .env
+```
+
+No need to restart anything - the configuration is loaded each time you run the pipeline.
+
+---
+
+## 📚 Related Documentation
+
+- **Full Setup**: See `QUICKSTART.md`
+- **Pipeline Details**: See `README_PIPELINE.md`
+- **Project Overview**: See `PROJECT_SUMMARY.md`
