@@ -5,7 +5,6 @@ set -e
 
 echo "=========================================="
 echo "Testing OncoTrack Pipeline"
-echo "Using: vid1_frames_1-3/"
 echo "=========================================="
 echo ""
 
@@ -15,6 +14,11 @@ if [ -f ".env" ]; then
     export $(cat .env | grep -v '^#' | grep -v '^$' | xargs)
     echo ""
 fi
+
+# Use FRAMES_PATH from .env, or default to vid1_frames_1-3
+BATCH_PATH="${FRAMES_PATH:-vid1_frames_1-3}"
+echo "Using frames from: $BATCH_PATH"
+echo ""
 
 # Check if virtual environment is active
 if [[ -z "$VIRTUAL_ENV" ]]; then
@@ -53,7 +57,7 @@ echo "Running pipeline on vid1_frames_1-3..."
 echo ""
 
 python -m src.main \
-    --batch vid1_frames_1-3 \
+    --batch "$BATCH_PATH" \
     --visualize \
     --export \
     --output-dir output \

@@ -8,11 +8,14 @@ Incremental cell tracking pipeline using Fiji/TrackMate headless for detection a
 # 1. Run setup (creates .env file and installs dependencies)
 ./setup_env.sh
 
-# 2. Test with sample data
-./test_vid1_frames.sh
+# 2. Configure your paths in .env
+nano .env   # Set FIJI_PATH and FRAMES_PATH
+
+# 3. Test with your data
+./run_test.sh --visualize --export
 ```
 
-See [ENV_SETUP.md](ENV_SETUP.md) for configuration details and [QUICKSTART.md](QUICKSTART.md) for full setup guide.
+See [ENV_SETUP.md](ENV_SETUP.md) for configuration details, [TEAM_SETUP.md](TEAM_SETUP.md) for team onboarding, and [QUICKSTART.md](QUICKSTART.md) for full setup guide.
 
 ## Components
 
@@ -49,6 +52,9 @@ python -m src.main --batch data/batches/frames_1_3 --visualize --export
 ## Documentation
 
 - [QUICKSTART.md](QUICKSTART.md) - 5-minute setup guide
+- [CAPTURE_WORKFLOW.md](CAPTURE_WORKFLOW.md) - Frame capture & processing workflow
+- [ENV_SETUP.md](ENV_SETUP.md) - Environment configuration guide
+- [TEAM_SETUP.md](TEAM_SETUP.md) - Team onboarding guide
 - [README_PIPELINE.md](README_PIPELINE.md) - Full pipeline documentation
 - [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) - Technical overview
 

@@ -5,6 +5,7 @@ Executes Fiji/TrackMate in headless mode with proper parameter passing.
 import logging
 import subprocess
 import shutil
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 import tempfile
@@ -26,7 +27,7 @@ class FijiRunner:
         fiji_cmd = self.config.fiji_path
         
         # Try to find fiji executable
-        if shutil.which(fiji_cmd) is None:
+        if shutil.which(fiji_cmd) is None and not Path(fiji_cmd).exists():
             logger.warning(
                 f"Fiji executable '{fiji_cmd}' not found in PATH. "
                 f"Make sure Fiji is installed and FIJI_PATH is set correctly."
@@ -74,37 +75,47 @@ class FijiRunner:
         
         # Build command
         fiji_cmd = self.config.fiji_path
-        script_path = self.config.fiji_script
         
+        # Use Jython script instead of Groovy
+        script_path = Path(self.config.fiji_script.parent) / "run_trackmate_tail.py"
+        
+        if not script_path.exists():
+            # Fall back to groovy if python doesn't exist
+            script_path = self.config.fiji_script
+            
         if not script_path.exists():
             raise FileNotFoundError(f"Fiji script not found: {script_path}")
         
-        # Build Java system properties for parameter passing
-        # These need to be passed as JVM arguments BEFORE the -- separator
-        java_props = [
-            f"-Dinput_frames_dir={frames_dir.absolute()}",
-            f"-Doutput_dir={output_dir.absolute()}",
-            f"-Ddetector={detector.get('type', self.config.detector_type)}",
-            f"-Dradius={detector.get('radius', self.config.radius)}",
-            f"-Dthreshold={detector.get('threshold', self.config.threshold)}",
-            f"-Ddo_subpixel={str(detector.get('do_subpixel', self.config.do_subpixel)).lower()}",
-            f"-Ddo_median={str(detector.get('do_median', self.config.do_median_filter)).lower()}",
-            f"-Dtarget_channel={detector.get('target_channel', self.config.target_channel)}",
-            f"-Dlinking_max_distance={tracker.get('linking_max_distance', self.config.linking_max_distance)}",
-            f"-Dgap_closing_max_distance={tracker.get('gap_closing_max_distance', self.config.gap_closing_max_distance)}",
-            f"-Dmax_frame_gap={tracker.get('max_frame_gap', self.config.max_frame_gap)}",
-            f"-Dpixel_size={calib.get('pixel_size', self.config.pixel_size)}",
-            f"-Dtime_interval={calib.get('time_interval', self.config.time_interval)}",
-        ]
+        logger.info(f"Using TrackMate script: {script_path.name}")
         
-        # Construct full command
-        # Fiji headless mode with Jaunch v2: fiji [runtime_options] -- --run script.groovy
-        # Java properties go BEFORE the --, main arguments AFTER
+        # Write parameters to a JSON config file that the script will read
+        # This avoids all the command-line parsing issues
+        config_file = output_dir / "trackmate_config.json"
+        config_data = {
+            'input_frames_dir': str(frames_dir.absolute()),
+            'output_dir': str(output_dir.absolute()),
+            'detector': detector.get('type', self.config.detector_type),
+            'radius': float(detector.get('radius', self.config.radius)),
+            'threshold': float(detector.get('threshold', self.config.threshold)),
+            'do_subpixel': bool(detector.get('do_subpixel', self.config.do_subpixel)),
+            'do_median': bool(detector.get('do_median', self.config.do_median_filter)),
+            'target_channel': int(detector.get('target_channel', self.config.target_channel)),
+            'linking_max_distance': float(tracker.get('linking_max_distance', self.config.linking_max_distance)),
+            'gap_closing_max_distance': float(tracker.get('gap_closing_max_distance', self.config.gap_closing_max_distance)),
+            'max_frame_gap': int(tracker.get('max_frame_gap', self.config.max_frame_gap)),
+            'pixel_size': float(calib.get('pixel_size', self.config.pixel_size)),
+            'time_interval': float(calib.get('time_interval', self.config.time_interval)),
+        }
+        
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        
+        logger.debug(f"Wrote config to {config_file}")
+        
+        # Construct simple command - script will read config file
         cmd = [
             fiji_cmd,
-            "--no-splash",
-            *java_props,  # Java system properties (runtime options)
-            "--",  # Separator between runtime and main arguments
+            "--headless",
             "--run", str(script_path.absolute())
         ]
         
@@ -121,7 +132,9 @@ class FijiRunner:
                 timeout=600  # 10 minute timeout
             )
             
-            logger.debug(f"Fiji stdout:\n{result.stdout}")
+            # Always log stdout to see what happened
+            if result.stdout:
+                logger.info(f"Fiji stdout:\n{result.stdout}")
             
             if result.returncode != 0:
                 logger.error(f"Fiji stderr:\n{result.stderr}")
@@ -129,6 +142,9 @@ class FijiRunner:
                     f"Fiji TrackMate failed with exit code {result.returncode}\n"
                     f"stderr: {result.stderr}"
                 )
+            
+            if result.stderr:
+                logger.warning(f"Fiji stderr:\n{result.stderr}")
             
             logger.info("Fiji TrackMate completed successfully")
             

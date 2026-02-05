@@ -19,6 +19,10 @@ data/trackmate_runs/
 output/
 *.log
 
+# Screenshot captures (local development only)
+# Each developer has their own captures folder
+captures/
+
 # IDE
 .vscode/
 .idea/

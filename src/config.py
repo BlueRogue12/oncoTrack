@@ -36,8 +36,8 @@ class TrackerConfig:
     do_median_filter: bool = False
     
     # TrackMate LAP tracker parameters
-    linking_max_distance: float = 15.0  # Max distance for frame-to-frame linking
-    gap_closing_max_distance: float = 15.0
+    linking_max_distance: float = 50.0  # Max distance for frame-to-frame linking (increased for slow frame rate)
+    gap_closing_max_distance: float = 50.0
     max_frame_gap: int = 2
     
     # Calibration

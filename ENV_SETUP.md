@@ -114,6 +114,10 @@ You can add these to your `.env` file:
 # Required: Path to Fiji executable
 FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
 
+# Recommended: Default path to frames directory
+# Can be relative (to project root) or absolute
+FRAMES_PATH=vid1_frames_1-3
+
 # Optional: Override database path
 DB_PATH=data/tracking.db
 
@@ -122,6 +126,30 @@ OUTPUT_DIR=output
 
 # Optional: Default log level
 LOG_LEVEL=INFO
+```
+
+### Team-Friendly Frame Paths
+
+Each team member can configure their own frame location:
+
+**Developer 1** (local project folder):
+```bash
+FRAMES_PATH=vid1_frames_1-3
+```
+
+**Developer 2** (different batch):
+```bash
+FRAMES_PATH=data/batches/my_cells_batch1
+```
+
+**Developer 3** (shared network drive):
+```bash
+FRAMES_PATH=/mnt/shared/microscope_captures/experiment_2024
+```
+
+**Developer 4** (Windows WSL path):
+```bash
+FRAMES_PATH=/mnt/c/Users/username/Documents/cell_frames
 ```
 
 ---
