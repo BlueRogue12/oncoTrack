@@ -17,7 +17,7 @@ else
     echo "✓ Created .env file"
     echo ""
     echo "⚠️  IMPORTANT: Edit .env file and set your FIJI_PATH"
-    echo "   Current default: /home/phillip/Fiji/fiji-linux-x64"
+    echo "   Example: /home/username/Fiji/fiji-linux-x64"
     echo ""
 fi
 

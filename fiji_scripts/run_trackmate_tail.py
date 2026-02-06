@@ -1,12 +1,17 @@
 """
-TrackMate Headless Script for Incremental Cell Tracking (Jython/Python)
+TrackMate Headless Script for Incremental Cell Tracking (Jython/Python 2)
 
 This script runs TrackMate in headless mode.
 Parameters are read from a JSON config file to avoid command-line parsing issues.
 
+IMPORTANT: This is Jython (Python 2 syntax) for Fiji/ImageJ compatibility.
+IDE linters may show Python 3 errors - these can be ignored.
+
 Based on official TrackMate scripting documentation:
 https://imagej.net/plugins/trackmate/scripting/scripting
 """
+# -*- coding: utf-8 -*-
+# jython
 
 import sys
 import os
@@ -32,30 +37,61 @@ print "=" * 60
 
 # Load configuration from JSON file
 # The config file is created by the Python wrapper in the output directory
-# We need to search for it since Fiji may change the working directory
+# Priority: 1) Java system property 2) Search common locations
 
 import glob
+from java.lang import System
 
 config_path = None
 
-# Try common locations
-search_paths = [
-    os.getcwd(),
-    os.path.dirname(os.path.abspath(__file__)),
-    "/home/phillip/code/oncoTrack",
-]
-
-# Also search in data/trackmate_runs subdirectories
-base_dir = "/home/phillip/code/oncoTrack/data/trackmate_runs"
-if os.path.exists(base_dir):
-    for run_dir in os.listdir(base_dir):
-        search_paths.append(os.path.join(base_dir, run_dir))
-
-for search_dir in search_paths:
-    test_path = os.path.join(search_dir, "trackmate_config.json")
+# First, try to get output directory from Java system property (most reliable)
+output_dir_prop = System.getProperty("trackmate.output.dir")
+if output_dir_prop:
+    test_path = os.path.join(output_dir_prop, "trackmate_config.json")
     if os.path.exists(test_path):
         config_path = test_path
-        break
+        print "Found config via system property:", config_path
+
+# If not found via system property, search common locations
+if config_path is None:
+    print "System property not set, searching for config file..."
+    
+    # Try common locations
+    search_paths = [
+        os.getcwd(),
+        os.path.dirname(os.path.abspath(__file__)),
+    ]
+    
+    # Try to find project root by looking for common project files
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    for i in range(3):  # Search up to 3 levels up
+        parent = current_dir
+        for j in range(i + 1):
+            parent = os.path.dirname(parent)
+        if os.path.exists(os.path.join(parent, "src")) or os.path.exists(os.path.join(parent, "fiji_scripts")):
+            search_paths.append(parent)
+            # Also search in data/trackmate_runs subdirectories
+            base_dir = os.path.join(parent, "data", "trackmate_runs")
+            if os.path.exists(base_dir):
+                # Get all run directories, sorted by modification time (newest first)
+                run_dirs = []
+                for run_dir in os.listdir(base_dir):
+                    full_path = os.path.join(base_dir, run_dir)
+                    if os.path.isdir(full_path):
+                        run_dirs.append((full_path, os.path.getmtime(full_path)))
+                # Sort by modification time, newest first
+                run_dirs.sort(key=lambda x: x[1], reverse=True)
+                # Add to search paths
+                for run_dir, _ in run_dirs:
+                    search_paths.append(run_dir)
+            break
+    
+    for search_dir in search_paths:
+        test_path = os.path.join(search_dir, "trackmate_config.json")
+        if os.path.exists(test_path):
+            config_path = test_path
+            print "Found config at:", config_path
+            break
 
 if config_path is None:
     print "ERROR: Could not find trackmate_config.json"

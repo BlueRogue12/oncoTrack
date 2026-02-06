@@ -9,7 +9,7 @@ The pipeline now uses a `.env` file for configuration, making it much easier to 
 This will create your `.env` file and install dependencies:
 
 ```bash
-cd /home/phillip/code/oncoTrack
+cd ~/code/oncoTrack
 ./setup_env.sh
 ```
 
@@ -27,7 +27,7 @@ Or edit it in your IDE. It looks like this:
 # OncoTrack Pipeline Configuration
 
 # Path to Fiji executable
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 ```
 
 ### 3. Run the Pipeline
@@ -70,7 +70,7 @@ nano .env
 Edit `.env` and set:
 
 ```bash
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 ```
 
 **For other systems:**
@@ -112,7 +112,7 @@ You can add these to your `.env` file:
 
 ```bash
 # Required: Path to Fiji executable
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 
 # Recommended: Default path to frames directory
 # Can be relative (to project root) or absolute
@@ -188,7 +188,7 @@ The `.env.example` file IS committed and serves as a template.
 Make sure you're running scripts from the project root:
 
 ```bash
-cd /home/phillip/code/oncoTrack
+cd ~/code/oncoTrack
 ./test_vid1_frames.sh
 ```
 
@@ -196,17 +196,17 @@ cd /home/phillip/code/oncoTrack
 
 1. Check the path is correct:
    ```bash
-   ls -la /home/phillip/Fiji/fiji-linux-x64
+   ls -la ~/Fiji/fiji-linux-x64
    ```
 
 2. Make sure the file is executable:
    ```bash
-   chmod +x /home/phillip/Fiji/fiji-linux-x64
+   chmod +x ~/Fiji/fiji-linux-x64
    ```
 
 3. Test Fiji directly:
    ```bash
-   /home/phillip/Fiji/fiji-linux-x64 --version
+   ~/Fiji/fiji-linux-x64 --version
    ```
 
 ### Still getting "FIJI_PATH not set"?

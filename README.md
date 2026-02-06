@@ -6,16 +6,16 @@ Incremental cell tracking pipeline using Fiji/TrackMate headless for detection a
 
 ```bash
 # 1. Run setup (creates .env file and installs dependencies)
-./setup_env.sh
+./scripts/setup_env.sh
 
 # 2. Configure your paths in .env
 nano .env   # Set FIJI_PATH and FRAMES_PATH
 
 # 3. Test with your data
-./run_test.sh --visualize --export
+./scripts/run_test.sh --visualize --export
 ```
 
-See [ENV_SETUP.md](ENV_SETUP.md) for configuration details, [TEAM_SETUP.md](TEAM_SETUP.md) for team onboarding, and [QUICKSTART.md](QUICKSTART.md) for full setup guide.
+See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for configuration details, [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md) for team onboarding, and [docs/QUICKSTART.md](docs/QUICKSTART.md) for full setup guide.
 
 ## Components
 
@@ -23,14 +23,24 @@ See [ENV_SETUP.md](ENV_SETUP.md) for configuration details, [TEAM_SETUP.md](TEAM
 
 Qt GUI for capturing microscope frames from screen regions.
 
-```powershell
-python -m venv venv
-.\venv\Scripts\activate
+**Installation:**
+```bash
+# Install just PySide6 for the capture tool
 pip install PySide6
+
+# Or install all project dependencies
+pip install -r requirements.txt
+```
+
+**Run:**
+```bash
 python tools/frameCapture.py
 ```
 
-**Status**: Complete, do not modify
+**Output Location:**
+Frames are automatically saved to `captures/` folder in the project root (gitignored).
+
+**Status**: Complete, simplified for team use
 
 ### 2. Tracking Pipeline (New)
 
@@ -40,23 +50,37 @@ Incremental cell tracking with persistent IDs and SQLite storage.
 # Install dependencies
 pip install -r requirements.txt
 
-# Set Fiji path
-export FIJI_PATH=/path/to/fiji/ImageJ-linux64
+# Set Fiji path in .env (or use environment variable)
+nano .env
 
-# Run pipeline
-python -m src.main --batch data/batches/frames_1_3 --visualize --export
+# Run pipeline on sample data
+./scripts/run_test.sh --batch vid1_frames_1-3 --visualize --export
+
+# Or use Python directly
+python -m src.main --batch vid1_frames_1-3 --visualize --export
 ```
 
 **Status**: Complete implementation
 
 ## Documentation
 
-- [QUICKSTART.md](QUICKSTART.md) - 5-minute setup guide
-- [CAPTURE_WORKFLOW.md](CAPTURE_WORKFLOW.md) - Frame capture & processing workflow
-- [ENV_SETUP.md](ENV_SETUP.md) - Environment configuration guide
-- [TEAM_SETUP.md](TEAM_SETUP.md) - Team onboarding guide
-- [README_PIPELINE.md](README_PIPELINE.md) - Full pipeline documentation
-- [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) - Technical overview
+📚 **[Full Documentation →](docs/)**
+
+Quick links:
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) - 5-minute setup guide
+- [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) - Branching strategy and git best practices
+- [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md) - Team onboarding guide
+- [docs/CAPTURE_WORKFLOW.md](docs/CAPTURE_WORKFLOW.md) - Frame capture & processing workflow
+- [docs/README_PIPELINE.md](docs/README_PIPELINE.md) - Full pipeline documentation
+- [docs/PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) - Technical overview
+
+## Scripts
+
+🔧 **[Utility Scripts →](scripts/)**
+
+- [scripts/setup_env.sh](scripts/setup_env.sh) - One-time environment setup
+- [scripts/run_test.sh](scripts/run_test.sh) - Run pipeline tests
+- [scripts/verify_setup.sh](scripts/verify_setup.sh) - Verify installation
 
 ## Architecture
 

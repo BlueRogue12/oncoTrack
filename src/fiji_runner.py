@@ -112,9 +112,11 @@ class FijiRunner:
         
         logger.debug(f"Wrote config to {config_file}")
         
-        # Construct simple command - script will read config file
+        # Construct command with output directory hint
+        # Pass the output directory as a Java system property so the script knows where to find the config
         cmd = [
             fiji_cmd,
+            f"-Dtrackmate.output.dir={output_dir.absolute()}",
             "--headless",
             "--run", str(script_path.absolute())
         ]

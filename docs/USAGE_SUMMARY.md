@@ -6,7 +6,7 @@ Quick reference for running the pipeline with team-friendly configuration.
 
 Your `.env` file is configured with:
 ```bash
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 FRAMES_PATH=vid1_frames_1-3
 ```
 
@@ -40,7 +40,7 @@ Edit `.env` to change defaults:
 
 ```bash
 # Your Fiji installation
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 
 # Default frames directory (can be relative or absolute)
 FRAMES_PATH=vid1_frames_1-3
@@ -79,7 +79,7 @@ FRAMES_PATH=data/batches/my_batch
 
 ### Absolute paths
 ```bash
-FRAMES_PATH=/home/phillip/microscope_data/batch_001
+FRAMES_PATH=/home/username/microscope_data/batch_001
 FRAMES_PATH=/mnt/shared/lab_storage/experiments/2024-02
 ```
 
@@ -167,7 +167,7 @@ column -t -s, output/exports/master_tracks.csv | less -S
 ### "FIJI_PATH not set"
 → Set in `.env` file or export manually:
 ```bash
-export FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
+export FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 ```
 
 ### "Batch directory does not exist"

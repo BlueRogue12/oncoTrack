@@ -5,7 +5,7 @@ Get up and running with the incremental cell tracking pipeline in 5 minutes.
 ## Step 1: Install Dependencies
 
 ```bash
-cd /home/phillip/code/oncoTrack
+cd ~/code/oncoTrack
 
 # Create virtual environment
 python -m venv venv

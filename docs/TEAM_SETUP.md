@@ -101,38 +101,6 @@ Run test:
 
 ---
 
-## 🔧 Per-Developer Configuration Examples
-
-### Developer: Phillip (Original)
-```bash
-# .env
-FIJI_PATH=/home/phillip/Fiji/fiji-linux-x64
-FRAMES_PATH=vid1_frames_1-3
-```
-
-### Developer: Sarah (Mac with external drive)
-```bash
-# .env
-FIJI_PATH=/Applications/Fiji.app/Contents/MacOS/ImageJ-macosx
-FRAMES_PATH=/Volumes/ExternalDrive/cell_tracking/batch_001
-```
-
-### Developer: Mike (Windows WSL with shared folder)
-```bash
-# .env
-FIJI_PATH=/home/mike/tools/Fiji/fiji-linux-x64
-FRAMES_PATH=/mnt/c/Users/Mike/Documents/Research/Frames
-```
-
-### Developer: Lisa (Linux with lab server mount)
-```bash
-# .env
-FIJI_PATH=/opt/fiji/ImageJ-linux64
-FRAMES_PATH=/mnt/lab_server/experiments/lisa/2024_Q1/frames
-```
-
----
-
 ## 🚀 Running the Pipeline
 
 ### Method 1: Use .env Default

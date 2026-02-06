@@ -12,16 +12,14 @@ ENV/
 # Environment variables (keep .env.example)
 .env
 
-# Pipeline outputs
-data/tracking.db
-data/tracking.db-journal
-data/trackmate_runs/
+# Pipeline outputs - all generated data
+data/
 output/
+captures/
 *.log
 
-# Screenshot captures (local development only)
-# Each developer has their own captures folder
-captures/
+# Exception: Keep data/batches/ for sample/test data
+!data/batches/
 
 # IDE
 .vscode/
