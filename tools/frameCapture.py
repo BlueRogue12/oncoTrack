@@ -30,9 +30,16 @@ class CaptureRegion:
 
 
 def get_output_folder() -> Path:
-    docs = Path(os.path.expanduser("~/Documents"))
-    out = docs / "OncoTrackSnaps"
-    out.mkdir(exist_ok=True)
+    """
+    Get output folder for captured frames.
+    Always uses captures/ folder in project root (cross-platform, simple).
+    """
+    # Always use captures/ folder in project root
+    project_root = Path(__file__).parent.parent
+    out = project_root / "captures"
+    
+    # Ensure directory exists
+    out.mkdir(parents=True, exist_ok=True)
     return out
 
 
@@ -404,7 +411,44 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     def open_folder(self):
-        os.startfile(self.output_dir)
+        """Open the output folder in the system file manager (cross-platform)."""
+        import subprocess
+        import platform
+        
+        try:
+            if platform.system() == "Windows":
+                os.startfile(self.output_dir)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", self.output_dir], check=True)
+            else:  # Linux and other Unix-like systems
+                # Try WSL2 first (open in Windows Explorer)
+                if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
+                    # Running in WSL2 - use Windows Explorer
+                    result = subprocess.run(
+                        ["explorer.exe", str(self.output_dir)],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        return
+                
+                # Try native Linux file manager
+                result = subprocess.run(
+                    ["xdg-open", self.output_dir],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    # xdg-open failed (likely headless environment)
+                    self.log_msg(f"Cannot open file manager (headless environment)")
+                    self.log_msg(f"Frames saved to: {self.output_dir}")
+                    return
+        except FileNotFoundError:
+            # Command not found
+            self.log_msg(f"Cannot open file manager (command not available)")
+            self.log_msg(f"Frames saved to: {self.output_dir}")
+        except Exception as e:
+            self.log_msg(f"Could not open folder: {e}")
+            self.log_msg(f"Frames saved to: {self.output_dir}")
 
     def capture(self):
         if not self.region:
