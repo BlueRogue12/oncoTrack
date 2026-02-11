@@ -98,7 +98,7 @@ class ScreenSelector(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
         self._origin_global: QPoint | None = None
-        self._rubber = QRubberBand(QRubberBand.Rectangle, self)
+        self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._rubber.hide()
 
         screen = QGuiApplication.primaryScreen()
