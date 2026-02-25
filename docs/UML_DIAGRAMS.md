@@ -6,6 +6,7 @@ This document contains UML diagrams for the oncoTrack repository using Mermaid s
 1. [System Architecture Overview](#1-system-architecture-overview)
 2. [Class Diagrams](#2-class-diagrams)
 3. [Pipeline Sequence Diagram](#3-pipeline-sequence-diagram)
+4. [Use-Case Diagram](#4-use-case-diagram)
 
 ---
 
@@ -14,53 +15,36 @@ This document contains UML diagrams for the oncoTrack repository using Mermaid s
 ```mermaid
 graph TB
     subgraph "Frame Capture Tool"
-        FC[frameCapture.py<br/>ScreenshotApp / ScreenSelector]
-        FC_OUT[captures/<br/>PNG frames]
+        FC[frameCapture.py] --> FC_OUT[PNG frames]
     end
 
-    subgraph "Tracking Pipeline  src/"
-        FI[FrameIngester<br/>frame_ingest.py]
-        DB[(TrackingStore<br/>SQLite DB)]
-        FR[FijiRunner<br/>fiji_runner.py]
-        EXT[Fiji / TrackMate<br/>Headless]
-        CSV[TrackMate CSVs<br/>spots, tracks, edges]
-        TMP[TrackMateParser<br/>parse_trackmate_outputs.py]
-        TS[TrackStitcher<br/>stitcher.py]
-        EXP[DataExporter<br/>export.py]
-        VIZ[TrackVisualizer<br/>visualize.py]
-        ORCH[IncrementalTracker<br/>main.py]
+    subgraph "Tracking Pipeline — orchestrated by IncrementalTracker"
+        FI[FrameIngester]
+        DB[(TrackingStore)]
+        TM[Fiji/TrackMate]
+        TS[TrackStitcher]
+        EXP[DataExporter]
+        VIZ[TrackVisualizer]
     end
 
     subgraph "Outputs"
-        MCSV[master_tracks.csv<br/>cells_summary.csv<br/>events.csv]
-        PNG[tracks.png<br/>visualization]
+        MCSV[CSV exports]
+        PNG[visualization]
     end
 
-    FC --> FC_OUT
     FC_OUT --> FI
     FI --> DB
-    FI --> FR
-    FR --> EXT
-    EXT --> CSV
-    CSV --> TMP
-    TMP --> TS
+    FI --> TM
+    TM --> TS
     TS --> DB
     DB --> EXP
     DB --> VIZ
     EXP --> MCSV
     VIZ --> PNG
 
-    ORCH -.->|orchestrates| FI
-    ORCH -.->|orchestrates| FR
-    ORCH -.->|orchestrates| TMP
-    ORCH -.->|orchestrates| TS
-    ORCH -.->|orchestrates| EXP
-    ORCH -.->|orchestrates| VIZ
-
     style FC fill:#e1f5ff
-    style ORCH fill:#fff4e1
     style DB fill:#e1ffe1
-    style EXT fill:#ffe1f5
+    style TM fill:#ffe1f5
     style MCSV fill:#f5ffe1
     style PNG fill:#f5ffe1
 ```
@@ -308,56 +292,74 @@ classDiagram
 sequenceDiagram
     actor User
     participant ORC as IncrementalTracker
-    participant FI as FrameIngester
     participant DB as TrackingStore
-    participant FR as FijiRunner
     participant TM as Fiji/TrackMate
-    participant TMP as TrackMateParser
     participant TS as TrackStitcher
 
-    User->>ORC: process_batch(batch_path)
+    User->>ORC: process batch
 
-    Note over ORC,FI: Step 1 — Discover Frames
-    ORC->>FI: discover_frames(batch_path)
-    FI-->>ORC: frames[]
+    Note over ORC: Step 1 — Discover Frames
+    ORC->>ORC: discover & register frames
 
     Note over ORC,DB: Step 2 — Register Frames
-    ORC->>DB: add_frame() × N
-    ORC->>DB: get_finalized_frame()
-    DB-->>ORC: finalized_frame (null if first batch)
+    ORC->>DB: store frames, get finalized frame
+    DB-->>ORC: finalized frame (null if first batch)
 
     Note over ORC: Step 3 — Determine Tail Window
-    ORC->>ORC: calc overlap_frame_start/end
+    ORC->>ORC: calculate overlap window
 
     Note over ORC,TM: Step 4 — Run TrackMate
-    ORC->>FR: run_trackmate_on_frames(batch_path, output_dir)
-    FR->>TM: fiji --headless --run script
-    TM-->>FR: spots.csv, tracks.csv, edges.csv
-    FR-->>ORC: output_paths dict
+    ORC->>TM: run TrackMate on frames
+    TM-->>ORC: parsed tracks
 
-    Note over ORC,TMP: Step 5 — Parse Outputs
-    ORC->>TMP: parse_all(output_dir)
-    TMP-->>ORC: tracks dict[id → Track]
-
-    Note over ORC,TS: Step 6 — Stitch Tracks
+    Note over ORC,TS: Step 5 & 6 — Stitch Tracks
     alt First batch
-        ORC->>DB: create_cell() × N
-        ORC->>DB: add_points(all_spots)
+        ORC->>DB: create cells & store all spots
     else Subsequent batch
-        ORC->>TS: stitch_tracks(tracks, overlap_start, overlap_end, new_start)
-        TS->>DB: get_cells_in_frame_range(overlap)
-        DB-->>TS: existing_cells[]
-        TS->>TS: build cost matrix (mean Euclidean distance)
-        TS->>TS: greedy assignment (sort by min cost)
-        TS->>DB: create_cell() for unmatched tracks
-        TS->>DB: add_points(new frames only)
-        TS-->>ORC: StitchingResult
+        ORC->>TS: stitch tracks in overlap window
+        TS->>DB: fetch existing cells, assign new tracks
+        TS-->>ORC: stitching result
     end
 
     Note over ORC,DB: Step 7 — Update Finalized Frame
-    ORC->>DB: set_finalized_frame(frame_end - overlap_window)
+    ORC->>DB: set finalized frame
 
     ORC-->>User: batch complete
+```
+
+---
+
+## 4. Use-Case Diagram
+
+The use-case diagram identifies the primary interactions between the Researcher and the OncoTrack system. The Researcher initiates all six core workflows: uploading microscopy video, preprocessing frames, detecting and tracking cells, generating trajectories, computing migration metrics, and exporting results. Together these use cases capture the full lifecycle of a cell-tracking experiment, from raw video input through to quantitative output. The diagram is intentionally high-level to highlight system scope rather than implementation detail.
+
+```mermaid
+flowchart LR
+    RES[Researcher]
+
+    subgraph System["OncoTrack System"]
+        UC1([Upload Microscopy Video])
+        UC2([Preprocess Frames])
+        UC3([Detect & Track Cells])
+        UC4([Generate Trajectories])
+        UC5([Compute Migration Metrics])
+        UC6([Export Results])
+    end
+
+    RES --- UC1
+    RES --- UC2
+    RES --- UC3
+    RES --- UC4
+    RES --- UC5
+    RES --- UC6
+
+    style RES fill:#e1f5ff
+    style UC1 fill:#fff4e1
+    style UC2 fill:#fff4e1
+    style UC3 fill:#fff4e1
+    style UC4 fill:#f5ffe1
+    style UC5 fill:#f5ffe1
+    style UC6 fill:#f5ffe1
 ```
 
 ---
