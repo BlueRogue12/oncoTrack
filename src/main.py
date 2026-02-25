@@ -314,6 +314,24 @@ def main():
         type=str,
         help='Override database path (default: data/tracking.db)'
     )
+
+    parser.add_argument(
+        '--radius',
+        type=float,
+        help='Override TrackMate detector radius (in pixels)'
+    )
+
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        help='Override TrackMate detector threshold'
+    )
+
+    parser.add_argument(
+        '--linking',
+        type=float,
+        help='Override TrackMate linking max distance'
+    )
     
     args = parser.parse_args()
     
@@ -329,6 +347,16 @@ def main():
     if args.db_path:
         config.db_path = Path(args.db_path)
     
+    # Override TrackMate parameters if provided by user
+    if args.radius is not None:
+        config.radius = args.radius
+
+    if args.threshold is not None:
+        config.threshold = args.threshold
+
+    if args.linking is not None:
+        config.linking_max_distance = args.linking
+        
     # Create tracker
     tracker = IncrementalTracker(config)
     

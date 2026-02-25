@@ -189,6 +189,10 @@ for img_file in image_files:
 imp = ImagePlus("TrackMate Input Stack", stack)
 print "Created stack with", stack.getSize(), "frames"
 
+# Set as time series
+imp.setDimensions(1, 1, stack.getSize())
+imp.setOpenAsHyperStack(True)
+
 # Get calibration from image
 cal = imp.getCalibration()
 

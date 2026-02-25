@@ -1,6 +1,13 @@
 #!/bin/bash
 # Verification script to check if the pipeline is correctly set up
 
+# Load .env from project root if present
+if [ -f ".env" ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 set -e
 
 # Colors

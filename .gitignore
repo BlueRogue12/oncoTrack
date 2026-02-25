@@ -11,6 +11,7 @@ ENV/
 
 # Environment variables (keep .env.example)
 .env
+.env.txt
 
 # Pipeline outputs - all generated data
 data/
@@ -42,3 +43,4 @@ htmlcov/
 *.tmp
 tmp/
 temp/
+.claude/
