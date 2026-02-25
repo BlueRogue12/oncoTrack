@@ -2,12 +2,13 @@ import sys
 import os
 import json
 import math
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
-from PySide6.QtCore import Qt, QRect, QPoint, QTimer, Signal
+from PySide6.QtCore import Qt, QRect, QPoint, QTimer, Signal, QThread
 from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLineEdit,
+    QCheckBox,
 )
 
 
@@ -263,6 +265,108 @@ class ROIOverlay(QWidget):
             painter.setBrush(QColor(0, 255, 0, 255))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QPoint(ox, oy), 3, 3)
+
+
+# ----------------------------
+# Track Overlay (cell tracks from database)
+# ----------------------------
+
+class TrackOverlay(QWidget):
+    """Transparent overlay that draws cell track dots and connecting lines from the DB."""
+
+    DOT_RADIUS = 4
+    DOT_COLOR = QColor(220, 0, 0, 220)
+    LINE_COLOR = QColor(220, 0, 0, 150)
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+
+        # cell_id -> list of (x, y) in physical pixels of the captured frame image
+        self._points_by_cell: Dict[int, List[Tuple[float, float]]] = {}
+        # Device pixel ratio of the screen the ROI lives on (used to scale DB coords
+        # back to the overlay widget's logical pixel space)
+        self._dpr: float = 1.0
+
+    def set_region_global(self, region: CaptureRegion):
+        self.setGeometry(region.x, region.y, region.w, region.h)
+        self.update()
+
+    def set_tracks(self, points_by_cell: Dict[int, List[Tuple[float, float]]]):
+        self._points_by_cell = points_by_cell
+        self.update()
+
+    def set_dpr(self, dpr: float):
+        self._dpr = max(0.01, float(dpr))
+        self.update()
+
+    def paintEvent(self, _event):
+        if not self._points_by_cell:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        scale = 1.0 / self._dpr
+
+        line_pen = QPen(self.LINE_COLOR)
+        line_pen.setWidth(1)
+
+        # Pass 1: track lines (drawn beneath dots)
+        painter.setPen(line_pen)
+        for pts in self._points_by_cell.values():
+            if len(pts) < 2:
+                continue
+            for i in range(len(pts) - 1):
+                x1 = int(round(pts[i][0] * scale))
+                y1 = int(round(pts[i][1] * scale))
+                x2 = int(round(pts[i + 1][0] * scale))
+                y2 = int(round(pts[i + 1][1] * scale))
+                painter.drawLine(QPoint(x1, y1), QPoint(x2, y2))
+
+        # Pass 2: dots on top
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.DOT_COLOR)
+        for pts in self._points_by_cell.values():
+            for x, y in pts:
+                cx = int(round(x * scale))
+                cy = int(round(y * scale))
+                painter.drawEllipse(QPoint(cx, cy), self.DOT_RADIUS, self.DOT_RADIUS)
+
+
+# ----------------------------
+# Pipeline Worker (background thread)
+# ----------------------------
+
+class PipelineWorker(QThread):
+    """Runs IncrementalTracker.process_batch() in a background thread."""
+
+    finished = Signal(bool, str)  # (success, message)
+
+    def __init__(self, batch_path: Path):
+        super().__init__()
+        self._batch_path = batch_path
+
+    def run(self):
+        try:
+            project_root = get_project_root()
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+            from src.main import IncrementalTracker  # type: ignore
+            from src.config import get_default_config  # type: ignore
+            config = get_default_config()
+            tracker = IncrementalTracker(config)
+            tracker.process_batch(self._batch_path)
+            self.finished.emit(True, "Pipeline completed successfully.")
+        except Exception as exc:
+            self.finished.emit(False, f"Pipeline error: {exc}")
 
 
 # ----------------------------
@@ -577,6 +681,17 @@ class ScreenshotApp(QMainWindow):
         self._roi_overlay: ROIOverlay | None = None
         self._roi_box_enabled: bool = True
 
+        # Track overlay state
+        self._track_overlay: TrackOverlay | None = None
+        self._tracks_visible: bool = False
+
+        # Pipeline execution state
+        self._db_path: Path = get_project_root() / "data" / "tracking.db"
+        self._pipeline_timer: QTimer = QTimer(self)
+        self._pipeline_timer.timeout.connect(self._run_pipeline_now)
+        self._pipeline_worker: PipelineWorker | None = None
+        self._test_mode: bool = False
+
         # Calibration state
         self.calibration: Calibration = Calibration(units_per_pixel=1.0, unit_name="px")
         self._cal_overlay: Optional[CalibrationOverlay] = None
@@ -745,6 +860,61 @@ class ScreenshotApp(QMainWindow):
         row2.addStretch()
         layout.addLayout(row2)
 
+        # ── Pipeline execution row ──
+        pipeline_row = QHBoxLayout()
+        pipeline_row.addWidget(QLabel("Pipeline interval:"))
+
+        self.pipeline_minutes_combo = QComboBox()
+        for m in range(1, 60):
+            self.pipeline_minutes_combo.addItem(f"{m:02d}", m)
+        self.pipeline_minutes_combo.setCurrentIndex(4)  # default 5 min
+
+        pipeline_row.addWidget(self.pipeline_minutes_combo)
+        pipeline_row.addWidget(QLabel("min"))
+        pipeline_row.addSpacing(8)
+
+        self.run_pipeline_btn = QPushButton("Run Pipeline Now")
+        self.run_pipeline_btn.clicked.connect(self._run_pipeline_now)
+
+        self.pipeline_auto_btn = QPushButton("Start Auto Pipeline")
+        self.pipeline_auto_btn.setCheckable(True)
+        self.pipeline_auto_btn.clicked.connect(self._toggle_auto_pipeline)
+
+        self.test_mode_checkbox = QCheckBox("Test Mode (use vid1_frames)")
+        self.test_mode_checkbox.setChecked(False)
+        self.test_mode_checkbox.toggled.connect(self._on_test_mode_toggled)
+
+        pipeline_row.addWidget(self.run_pipeline_btn)
+        pipeline_row.addWidget(self.pipeline_auto_btn)
+        pipeline_row.addSpacing(16)
+        pipeline_row.addWidget(self.test_mode_checkbox)
+        pipeline_row.addStretch()
+        layout.addLayout(pipeline_row)
+
+        # ── Track visualization row ──
+        tracks_row = QHBoxLayout()
+
+        self.tracks_toggle_btn = QPushButton("Tracks: OFF")
+        self.tracks_toggle_btn.setCheckable(True)
+        self.tracks_toggle_btn.setChecked(False)
+        self.tracks_toggle_btn.clicked.connect(self._toggle_tracks)
+
+        self.refresh_tracks_btn = QPushButton("Refresh Tracks")
+        self.refresh_tracks_btn.clicked.connect(self._refresh_track_overlay)
+
+        self.clear_tracks_btn = QPushButton("Clear Tracks")
+        self.clear_tracks_btn.clicked.connect(self._clear_tracks)
+
+        tracks_row.addWidget(self.tracks_toggle_btn)
+        tracks_row.addWidget(self.refresh_tracks_btn)
+        tracks_row.addWidget(self.clear_tracks_btn)
+        tracks_row.addStretch()
+
+        self.pipeline_status_label = QLabel("Pipeline: Idle")
+        self.pipeline_status_label.setStyleSheet(status_style)
+        tracks_row.addWidget(self.pipeline_status_label)
+        layout.addLayout(tracks_row)
+
         self.status = QLabel("Capture status: Idle")
         self.status.setStyleSheet(status_style)
         layout.addWidget(self.status)
@@ -788,6 +958,19 @@ class ScreenshotApp(QMainWindow):
         self.status.setText("Capture status: Capturing" if running else "Capture status: Idle")
         self.roi_box_toggle_btn.setText("ROI Box: ON" if self._roi_box_enabled else "ROI Box: OFF")
 
+        pipeline_busy = self._pipeline_worker is not None and self._pipeline_worker.isRunning()
+        auto_pipeline_on = self._pipeline_timer.isActive()
+        self.run_pipeline_btn.setEnabled(not pipeline_busy)
+        self.pipeline_minutes_combo.setEnabled(not auto_pipeline_on and not pipeline_busy)
+        self.pipeline_auto_btn.setText(
+            "Stop Auto Pipeline" if auto_pipeline_on else "Start Auto Pipeline"
+        )
+        self.pipeline_auto_btn.setChecked(auto_pipeline_on)
+        self.tracks_toggle_btn.setText("Tracks: ON" if self._tracks_visible else "Tracks: OFF")
+        self.tracks_toggle_btn.setChecked(self._tracks_visible)
+        self.refresh_tracks_btn.setEnabled(self.region is not None)
+        self.clear_tracks_btn.setEnabled(self.region is not None)
+
     def log_msg(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.appendPlainText(f"[{ts}] {msg}")
@@ -826,6 +1009,112 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     # ----------------------------
+    # Track overlay helpers
+    # ----------------------------
+
+    def _get_roi_dpr(self) -> float:
+        """Return the device pixel ratio of the screen containing the ROI."""
+        if self.region is None:
+            return 1.0
+        screen = QGuiApplication.screenAt(QPoint(self.region.x, self.region.y))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        return float(screen.devicePixelRatio()) if screen else 1.0
+
+    def _ensure_track_overlay(self):
+        if self._track_overlay is None:
+            self._track_overlay = TrackOverlay()
+
+    def _show_track_overlay(self):
+        if not self._tracks_visible or self.region is None:
+            return
+        self._ensure_track_overlay()
+        self._track_overlay.set_region_global(self.region)
+        self._track_overlay.set_dpr(self._get_roi_dpr())
+        self._track_overlay.show()
+        self._track_overlay.raise_()
+
+    def _hide_track_overlay(self):
+        if self._track_overlay is not None:
+            self._track_overlay.hide()
+
+    def _toggle_tracks(self):
+        self._tracks_visible = self.tracks_toggle_btn.isChecked()
+        if self._tracks_visible:
+            self._show_track_overlay()
+            self.log_msg("Track overlay shown.")
+        else:
+            self._hide_track_overlay()
+            self.log_msg("Track overlay hidden.")
+        self.update_ui()
+
+    def _clear_tracks(self):
+        if self._track_overlay is not None:
+            self._track_overlay.set_tracks({})
+        self.log_msg("Tracks cleared from overlay.")
+
+    def _refresh_track_overlay(self):
+        """Query the database for all cell tracks and update the overlay."""
+        tracks = load_tracks_from_db(self._db_path)
+        if not tracks:
+            self.log_msg(f"No tracks found in database ({self._db_path.name}).")
+            return
+        total_pts = sum(len(v) for v in tracks.values())
+        self.log_msg(f"Loaded {len(tracks)} cell track(s) ({total_pts} points) from DB.")
+        self._ensure_track_overlay()
+        self._track_overlay.set_tracks(tracks)
+        if self._tracks_visible and self.region is not None:
+            self._show_track_overlay()
+
+    # ----------------------------
+    # Pipeline execution
+    # ----------------------------
+
+    def _on_test_mode_toggled(self, checked: bool):
+        self._test_mode = checked
+        state = "ON — pipeline will use vid1_frames/" if checked else "OFF — pipeline will use captures/"
+        self.log_msg(f"Test mode {state}")
+
+    def _run_pipeline_now(self):
+        """Trigger one pipeline run immediately, if no run is already in progress."""
+        if self._pipeline_worker is not None and self._pipeline_worker.isRunning():
+            self.log_msg("Pipeline already running — skipping.")
+            return
+        if self._test_mode:
+            batch_path = get_project_root() / "vid1_frames"
+        else:
+            batch_path = get_output_folder()
+        frame_exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
+        has_frames = batch_path.exists() and any(f.suffix.lower() in frame_exts for f in batch_path.iterdir())
+        if not has_frames:
+            self.log_msg(f"No frames found in {batch_path}. {'Check vid1_frames/ folder.' if self._test_mode else 'Capture some frames first.'}")
+            return
+        self.log_msg(f"Starting pipeline on {batch_path} …")
+        self.pipeline_status_label.setText("Pipeline: Running")
+        self._pipeline_worker = PipelineWorker(batch_path)
+        self._pipeline_worker.finished.connect(self._on_pipeline_finished)
+        self._pipeline_worker.start()
+        self.update_ui()
+
+    def _on_pipeline_finished(self, success: bool, message: str):
+        self.log_msg(message)
+        self.pipeline_status_label.setText("Pipeline: Done" if success else "Pipeline: Error")
+        self._pipeline_worker = None
+        if success:
+            self._refresh_track_overlay()
+        self.update_ui()
+
+    def _toggle_auto_pipeline(self):
+        if self.pipeline_auto_btn.isChecked():
+            minutes = int(self.pipeline_minutes_combo.currentData())
+            self._pipeline_timer.start(minutes * 60 * 1000)
+            self.log_msg(f"Auto pipeline started (every {minutes} min).")
+        else:
+            self._pipeline_timer.stop()
+            self.log_msg("Auto pipeline stopped.")
+        self.update_ui()
+
+    # ----------------------------
     # ROI selection
     # ----------------------------
 
@@ -844,6 +1133,9 @@ class ScreenshotApp(QMainWindow):
             self._roi_overlay.hide()
             self._roi_overlay.close()
             self._roi_overlay = None
+
+        if self._track_overlay is not None:
+            self._track_overlay.hide()
 
         self.log_msg("ROI cleared.")
         self._write_session_config_json()
@@ -890,6 +1182,8 @@ class ScreenshotApp(QMainWindow):
 
         self.reset_origin_to_default(silent=True)
         self._show_roi_overlay()
+        if self._tracks_visible:
+            self._show_track_overlay()
         self._write_session_config_json()
         self.update_ui()
 
@@ -1184,6 +1478,8 @@ class ScreenshotApp(QMainWindow):
         self.timer.start(ms)
         self.log_msg(f"Capture started (interval {self.interval_label()} mm:ss). Origin marker hidden.")
         self.update_ui()
+        if self._test_mode:
+            self._run_pipeline_now()
 
     def stop_capture(self):
         self.timer.stop()
@@ -1253,14 +1549,21 @@ class ScreenshotApp(QMainWindow):
         px_h = int(round(self.region.h * dpr))
 
         overlay_was_visible = self._roi_overlay is not None and self._roi_overlay.isVisible()
+        track_was_visible = self._track_overlay is not None and self._track_overlay.isVisible()
         if overlay_was_visible:
             self._hide_roi_overlay()
+        if track_was_visible:
+            self._hide_track_overlay()
+        if overlay_was_visible or track_was_visible:
             QApplication.processEvents()
 
         pixmap = screen.grabWindow(0, px_x, px_y, px_w, px_h)
 
         if overlay_was_visible:
             self._show_roi_overlay()
+        if track_was_visible:
+            self._show_track_overlay()
+        if overlay_was_visible or track_was_visible:
             QApplication.processEvents()
 
         if pixmap.isNull():
@@ -1275,9 +1578,17 @@ class ScreenshotApp(QMainWindow):
     def closeEvent(self, event):
         self._selector_stop_safely()
         self._stop_cal_overlay()
+        self._pipeline_timer.stop()
+        if self._pipeline_worker is not None and self._pipeline_worker.isRunning():
+            self._pipeline_worker.quit()
+            self._pipeline_worker.wait(3000)
+            self._pipeline_worker = None
         if self._roi_overlay is not None:
             self._roi_overlay.close()
             self._roi_overlay = None
+        if self._track_overlay is not None:
+            self._track_overlay.close()
+            self._track_overlay = None
         if self._origin_overlay is not None:
             try:
                 self._origin_overlay.stop()
@@ -1300,6 +1611,37 @@ def main():
 # =============================================================================
 # Backend helper functions (import these from your tracking code)
 # =============================================================================
+
+def load_tracks_from_db(db_path: Path) -> Dict[int, List[Tuple[float, float]]]:
+    """
+    Load all cell track points from the SQLite tracking database.
+
+    Returns:
+        Dict mapping cell_id -> list of (x, y) tuples ordered by frame_index.
+        Coordinates are in the physical pixel space of the captured frame images
+        (i.e. multiply the ROI logical size by the screen DPR to get this space).
+        Returns an empty dict if the database does not exist or has no points.
+    """
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT cell_id, x, y FROM points ORDER BY cell_id, frame_index"
+            )
+            result: Dict[int, List[Tuple[float, float]]] = {}
+            for cell_id, x, y in cursor.fetchall():
+                if cell_id not in result:
+                    result[cell_id] = []
+                result[cell_id].append((float(x), float(y)))
+            return result
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
 
 def roi_origin_pixel(roi_w: int, roi_h: int, origin: OriginConfig) -> Tuple[int, int]:
     """

@@ -7,7 +7,7 @@ Quick reference for running the pipeline with team-friendly configuration.
 Your `.env` file is configured with:
 ```bash
 FIJI_PATH=/home/username/Fiji/fiji-linux-x64
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 ```
 
 ## 🚀 Quick Commands
@@ -43,7 +43,7 @@ Edit `.env` to change defaults:
 FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 
 # Default frames directory (can be relative or absolute)
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 
 # Optional overrides
 # DB_PATH=data/tracking.db
@@ -73,7 +73,7 @@ See [TEAM_SETUP.md](TEAM_SETUP.md) for detailed team onboarding guide.
 
 ### Relative paths (from project root)
 ```bash
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 FRAMES_PATH=data/batches/my_batch
 ```
 
