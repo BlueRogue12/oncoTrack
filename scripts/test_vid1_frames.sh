@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick test script for vid1_frames_1-3
+# Quick test script for vid1_frames
 
 set -e
 
@@ -15,8 +15,8 @@ if [ -f ".env" ]; then
     echo ""
 fi
 
-# Use FRAMES_PATH from .env, or default to vid1_frames_1-3
-BATCH_PATH="${FRAMES_PATH:-vid1_frames_1-3}"
+# Use FRAMES_PATH from .env, or default to vid1_frames
+BATCH_PATH="${FRAMES_PATH:-vid1_frames}"
 echo "Using frames from: $BATCH_PATH"
 echo ""
 
@@ -53,7 +53,7 @@ echo "✓ Cleaned"
 echo ""
 
 # Run the pipeline
-echo "Running pipeline on vid1_frames_1-3..."
+echo "Running pipeline on vid1_frames..."
 echo ""
 
 python -m src.main \

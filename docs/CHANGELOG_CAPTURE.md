@@ -78,7 +78,7 @@ frameCapture.py → CAPTURE_OUTPUT_DIR (shared location)
 
 ### Test with Sample Data (Recommended)
 ```bash
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 ./run_test.sh --visualize --export
 ```
 
@@ -108,7 +108,7 @@ python tools/frameCapture.py
 
 1. **Flexible Development**: Each developer can configure their own capture location
 2. **Clean Git History**: Captures are not committed (gitignored)
-3. **Sample Data Preserved**: `vid1_frames_1-3/` remains committed for testing
+3. **Sample Data Preserved**: `vid1_frames/` remains committed for testing
 4. **Production Ready**: Easy transition to shared storage in production
 5. **Team Friendly**: Clear separation between personal workspace and shared data
 

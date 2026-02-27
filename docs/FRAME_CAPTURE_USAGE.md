@@ -249,7 +249,7 @@ else:
 
 | Configuration | Capture Saves To | Pipeline Reads From |
 |---------------|------------------|---------------------|
-| Development | `CAPTURE_OUTPUT_DIR` (e.g., `captures/`) | `FRAMES_PATH` (e.g., `vid1_frames_1-3`) |
+| Development | `CAPTURE_OUTPUT_DIR` (e.g., `captures/`) | `FRAMES_PATH` (e.g., `vid1_frames`) |
 | Testing | `CAPTURE_OUTPUT_DIR=captures` | `FRAMES_PATH=captures` |
 | Production | `CAPTURE_OUTPUT_DIR=/mnt/shared/...` | `FRAMES_PATH=/mnt/shared/...` (same) |
 
