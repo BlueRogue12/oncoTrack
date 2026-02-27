@@ -274,9 +274,11 @@ class ROIOverlay(QWidget):
 class TrackOverlay(QWidget):
     """Transparent overlay that draws cell track dots and connecting lines from the DB."""
 
-    DOT_RADIUS = 4
+    DOT_RADIUS = 2
+    RING_RADIUS = 7
     DOT_COLOR = QColor(220, 0, 0, 220)
     LINE_COLOR = QColor(220, 0, 0, 150)
+    RING_COLOR = QColor(220, 0, 0, 200)
 
     def __init__(self):
         super().__init__(None)
@@ -339,6 +341,19 @@ class TrackOverlay(QWidget):
                 cx = int(round(x * scale))
                 cy = int(round(y * scale))
                 painter.drawEllipse(QPoint(cx, cy), self.DOT_RADIUS, self.DOT_RADIUS)
+
+        # Pass 3: ring around the most recent point of each cell
+        ring_pen = QPen(self.RING_COLOR)
+        ring_pen.setWidth(1)
+        painter.setPen(ring_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for pts in self._points_by_cell.values():
+            if not pts:
+                continue
+            x, y = pts[-1]
+            cx = int(round(x * scale))
+            cy = int(round(y * scale))
+            painter.drawEllipse(QPoint(cx, cy), self.RING_RADIUS, self.RING_RADIUS)
 
 
 # ----------------------------
