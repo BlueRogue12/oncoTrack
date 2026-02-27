@@ -707,6 +707,15 @@ class ScreenshotApp(QMainWindow):
         self._pipeline_worker: PipelineWorker | None = None
         self._test_mode: bool = False
 
+        # Sequential simulation state (test mode cycles vid1_frames1 → 2 → 3)
+        self._sim_batches: List[Path] = [
+            get_project_root() / "vid1_frames1",
+            get_project_root() / "vid1_frames2",
+            get_project_root() / "vid1_frames3",
+        ]
+        self._sim_batch_index: int = 0
+        self._sim_running: bool = False
+
         # Calibration state
         self.calibration: Calibration = Calibration(units_per_pixel=1.0, unit_name="px")
         self._cal_overlay: Optional[CalibrationOverlay] = None
@@ -1087,7 +1096,7 @@ class ScreenshotApp(QMainWindow):
 
     def _on_test_mode_toggled(self, checked: bool):
         self._test_mode = checked
-        state = "ON — pipeline will use vid1_frames/" if checked else "OFF — pipeline will use captures/"
+        state = "ON — pipeline will simulate vid1_frames1 → vid1_frames2 → vid1_frames3" if checked else "OFF — pipeline will use captures/"
         self.log_msg(f"Test mode {state}")
 
     def _run_pipeline_now(self):
@@ -1096,16 +1105,47 @@ class ScreenshotApp(QMainWindow):
             self.log_msg("Pipeline already running — skipping.")
             return
         if self._test_mode:
-            batch_path = get_project_root() / "vid1_frames"
+            # Clear the DB and start the sequential simulation: vid1_frames1 → 2 → 3
+            if self._db_path.exists():
+                self._db_path.unlink()
+                self.log_msg("Simulation: cleared tracking DB for fresh run.")
+            self._sim_batch_index = 0
+            self._sim_running = True
+            self._run_sim_batch()
         else:
             batch_path = get_output_folder()
+            frame_exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
+            has_frames = batch_path.exists() and any(f.suffix.lower() in frame_exts for f in batch_path.iterdir())
+            if not has_frames:
+                self.log_msg(f"No frames found in {batch_path}. Capture some frames first.")
+                return
+            self.log_msg(f"Starting pipeline on {batch_path} …")
+            self.pipeline_status_label.setText("Pipeline: Running")
+            self._pipeline_worker = PipelineWorker(batch_path)
+            self._pipeline_worker.finished.connect(self._on_pipeline_finished)
+            self._pipeline_worker.start()
+            self.update_ui()
+
+    def _run_sim_batch(self):
+        """Run the current simulation batch and chain to the next when it finishes."""
+        if self._sim_batch_index >= len(self._sim_batches):
+            self.log_msg("Simulation complete — all batches processed.")
+            self._sim_running = False
+            self.pipeline_status_label.setText("Pipeline: Simulation Done")
+            self.update_ui()
+            return
+        batch_path = self._sim_batches[self._sim_batch_index]
+        n = self._sim_batch_index + 1
+        total = len(self._sim_batches)
         frame_exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
         has_frames = batch_path.exists() and any(f.suffix.lower() in frame_exts for f in batch_path.iterdir())
         if not has_frames:
-            self.log_msg(f"No frames found in {batch_path}. {'Check vid1_frames/ folder.' if self._test_mode else 'Capture some frames first.'}")
+            self.log_msg(f"Simulation batch {n}/{total}: no frames in {batch_path.name} — skipping.")
+            self._sim_batch_index += 1
+            self._run_sim_batch()
             return
-        self.log_msg(f"Starting pipeline on {batch_path} …")
-        self.pipeline_status_label.setText("Pipeline: Running")
+        self.log_msg(f"Simulation batch {n}/{total}: running pipeline on {batch_path.name} …")
+        self.pipeline_status_label.setText(f"Pipeline: Batch {n}/{total} running")
         self._pipeline_worker = PipelineWorker(batch_path)
         self._pipeline_worker.finished.connect(self._on_pipeline_finished)
         self._pipeline_worker.start()
@@ -1113,10 +1153,17 @@ class ScreenshotApp(QMainWindow):
 
     def _on_pipeline_finished(self, success: bool, message: str):
         self.log_msg(message)
-        self.pipeline_status_label.setText("Pipeline: Done" if success else "Pipeline: Error")
         self._pipeline_worker = None
         if success:
             self._refresh_track_overlay()
+            if self._sim_running:
+                self._sim_batch_index += 1
+                self._run_sim_batch()
+                return
+            self.pipeline_status_label.setText("Pipeline: Done")
+        else:
+            self.pipeline_status_label.setText("Pipeline: Error")
+            self._sim_running = False
         self.update_ui()
 
     def _toggle_auto_pipeline(self):
