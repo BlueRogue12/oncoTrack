@@ -276,9 +276,20 @@ class TrackOverlay(QWidget):
 
     DOT_RADIUS = 2
     RING_RADIUS = 7
-    DOT_COLOR = QColor(220, 0, 0, 220)
-    LINE_COLOR = QColor(220, 0, 0, 150)
-    RING_COLOR = QColor(220, 0, 0, 200)
+
+    # Palette of visually distinct (R, G, B) tuples — cycled per cell_id
+    _PALETTE = [
+        (220,  50,  50),  # red
+        ( 50, 180,  50),  # green
+        ( 50, 120, 220),  # blue
+        (220, 160,   0),  # amber
+        (180,  50, 220),  # purple
+        (  0, 200, 200),  # cyan
+        (220, 110,   0),  # orange
+        (220,  50, 150),  # pink
+        (100, 220,  80),  # lime
+        ( 80, 180, 220),  # sky blue
+    ]
 
     def __init__(self):
         super().__init__(None)
@@ -296,6 +307,15 @@ class TrackOverlay(QWidget):
         # Device pixel ratio of the screen the ROI lives on (used to scale DB coords
         # back to the overlay widget's logical pixel space)
         self._dpr: float = 1.0
+        # Stable cell_id -> palette index mapping (so colors don't shift on refresh)
+        self._cell_color_index: Dict[int, int] = {}
+        self._next_color_index: int = 0
+
+    def _color_for_cell(self, cell_id: int) -> Tuple[int, int, int]:
+        if cell_id not in self._cell_color_index:
+            self._cell_color_index[cell_id] = self._next_color_index % len(self._PALETTE)
+            self._next_color_index += 1
+        return self._PALETTE[self._cell_color_index[cell_id]]
 
     def set_region_global(self, region: CaptureRegion):
         self.setGeometry(region.x, region.y, region.w, region.h)
@@ -318,42 +338,43 @@ class TrackOverlay(QWidget):
 
         scale = 1.0 / self._dpr
 
-        line_pen = QPen(self.LINE_COLOR)
-        line_pen.setWidth(1)
+        # Draw each cell's track in its own color
+        for cell_id, pts in self._points_by_cell.items():
+            r, g, b = self._color_for_cell(cell_id)
+            line_color = QColor(r, g, b, 150)
+            dot_color = QColor(r, g, b, 220)
+            ring_color = QColor(r, g, b, 200)
 
-        # Pass 1: track lines (drawn beneath dots)
-        painter.setPen(line_pen)
-        for pts in self._points_by_cell.values():
-            if len(pts) < 2:
-                continue
-            for i in range(len(pts) - 1):
-                x1 = int(round(pts[i][0] * scale))
-                y1 = int(round(pts[i][1] * scale))
-                x2 = int(round(pts[i + 1][0] * scale))
-                y2 = int(round(pts[i + 1][1] * scale))
-                painter.drawLine(QPoint(x1, y1), QPoint(x2, y2))
+            # Track lines
+            if len(pts) >= 2:
+                line_pen = QPen(line_color)
+                line_pen.setWidth(1)
+                painter.setPen(line_pen)
+                for i in range(len(pts) - 1):
+                    x1 = int(round(pts[i][0] * scale))
+                    y1 = int(round(pts[i][1] * scale))
+                    x2 = int(round(pts[i + 1][0] * scale))
+                    y2 = int(round(pts[i + 1][1] * scale))
+                    painter.drawLine(QPoint(x1, y1), QPoint(x2, y2))
 
-        # Pass 2: dots on top
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self.DOT_COLOR)
-        for pts in self._points_by_cell.values():
+            # Dots
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(dot_color)
             for x, y in pts:
                 cx = int(round(x * scale))
                 cy = int(round(y * scale))
                 painter.drawEllipse(QPoint(cx, cy), self.DOT_RADIUS, self.DOT_RADIUS)
 
-        # Pass 3: ring around the most recent point of each cell
-        ring_pen = QPen(self.RING_COLOR)
-        ring_pen.setWidth(1)
-        painter.setPen(ring_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for pts in self._points_by_cell.values():
-            if not pts:
-                continue
-            x, y = pts[-1]
-            cx = int(round(x * scale))
-            cy = int(round(y * scale))
-            painter.drawEllipse(QPoint(cx, cy), self.RING_RADIUS, self.RING_RADIUS)
+            # Ring around the most recent point
+            if pts:
+                ring_pen = QPen(ring_color)
+                ring_pen.setWidth(1)
+                painter.setPen(ring_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                x, y = pts[-1]
+                cx = int(round(x * scale))
+                cy = int(round(y * scale))
+                painter.drawEllipse(QPoint(cx, cy), self.RING_RADIUS, self.RING_RADIUS)
 
 
 # ----------------------------
