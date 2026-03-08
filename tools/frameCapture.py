@@ -3,13 +3,14 @@ import os
 import json
 import math
 import sqlite3
+import struct
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 from PySide6.QtCore import Qt, QRect, QPoint, QTimer, Signal, QThread
-from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QFont
+from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QFont, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLineEdit,
     QCheckBox,
+    QToolTip,
 )
 
 
@@ -277,9 +279,9 @@ class TrackOverlay(QWidget):
     DOT_RADIUS = 2
     RING_RADIUS = 7
 
-    # Palette of visually distinct (R, G, B) tuples — cycled per cell_id
+    # Palette of visually distinct (R, G, B) tuples — cycled per cell_id.
+    # Red is intentionally excluded; it is reserved for the fastest track.
     _PALETTE = [
-        (220,  50,  50),  # red
         ( 50, 180,  50),  # green
         ( 50, 120, 220),  # blue
         (220, 160,   0),  # amber
@@ -289,6 +291,7 @@ class TrackOverlay(QWidget):
         (220,  50, 150),  # pink
         (100, 220,  80),  # lime
         ( 80, 180, 220),  # sky blue
+        (160, 100, 220),  # lavender
     ]
 
     def __init__(self):
@@ -302,16 +305,43 @@ class TrackOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        # cell_id -> list of (x, y) in physical pixels of the captured frame image
-        self._points_by_cell: Dict[int, List[Tuple[float, float]]] = {}
-        # Device pixel ratio of the screen the ROI lives on (used to scale DB coords
-        # back to the overlay widget's logical pixel space)
+        # cell_id -> list of (x, y, t) in pixels of the source frame images
+        self._points_by_cell: Dict[int, List[Tuple[float, float, float]]] = {}
+        # Pixel dimensions of the source frame images TrackMate processed.
+        # Used to map DB coords to the overlay's logical pixel space.
+        # Falls back to DPR-based scaling when 0.
+        self._frame_w: int = 0
+        self._frame_h: int = 0
+        # Device pixel ratio fallback (used when frame dimensions are unknown)
         self._dpr: float = 1.0
         # Stable cell_id -> palette index mapping (so colors don't shift on refresh)
         self._cell_color_index: Dict[int, int] = {}
         self._next_color_index: int = 0
+        # The cell_id of the fastest track — rendered in red regardless of palette
+        self._fastest_cell_id: Optional[int] = None
+
+        # Hover detection — precomputed list of (local_cx, local_cy, cell_id, velocity_or_None)
+        self._hover_dots: List[Tuple[int, int, int, Optional[float]]] = []
+        # Track which dot (cell_id, velocity) is currently hovered to avoid tooltip flicker
+        self._current_hover: Optional[Tuple[int, Optional[float]]] = None
+
+        # Display-scale from calibration (applied when computing tooltip velocities)
+        self._units_per_pixel: float = 1.0
+        self._unit_name: str = "px"
+
+        # Whether we currently have a QApplication cursor override active
+        self._cursor_overridden: bool = False
+
+        # Poll cursor position at 50 ms — keeps WindowTransparentForInput intact
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(50)
+        self._hover_timer.timeout.connect(self._check_hover)
+
+    _RED = (220, 50, 50)
 
     def _color_for_cell(self, cell_id: int) -> Tuple[int, int, int]:
+        if cell_id == self._fastest_cell_id:
+            return self._RED
         if cell_id not in self._cell_color_index:
             self._cell_color_index[cell_id] = self._next_color_index % len(self._PALETTE)
             self._next_color_index += 1
@@ -319,15 +349,124 @@ class TrackOverlay(QWidget):
 
     def set_region_global(self, region: CaptureRegion):
         self.setGeometry(region.x, region.y, region.w, region.h)
+        self._rebuild_hover_data()
         self.update()
 
-    def set_tracks(self, points_by_cell: Dict[int, List[Tuple[float, float]]]):
+    def set_tracks(
+        self,
+        points_by_cell: Dict[int, List[Tuple[float, float, float]]],
+        fastest_cell_id: Optional[int] = None,
+        frame_size: Optional[Tuple[int, int]] = None,
+    ):
         self._points_by_cell = points_by_cell
+        self._fastest_cell_id = fastest_cell_id
+        if frame_size and frame_size[0] > 0 and frame_size[1] > 0:
+            self._frame_w, self._frame_h = frame_size
+        else:
+            self._frame_w = 0
+            self._frame_h = 0
+        self._rebuild_hover_data()
         self.update()
 
     def set_dpr(self, dpr: float):
         self._dpr = max(0.01, float(dpr))
+        self._rebuild_hover_data()
         self.update()
+
+    def set_display_scale(self, units_per_pixel: float, unit_name: str):
+        """Set the calibration scale used to convert px velocity to real-world units."""
+        self._units_per_pixel = max(1e-12, float(units_per_pixel))
+        self._unit_name = unit_name or "px"
+        self._rebuild_hover_data()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._hover_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._hover_timer.stop()
+        QToolTip.hideText()
+        self._current_hover = None
+        if self._cursor_overridden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_overridden = False
+
+    # ------------------------------------------------------------------
+    # Hover tooltip (cursor-position polling — no input capture needed)
+    # ------------------------------------------------------------------
+
+    def _scale_xy(self, x: float, y: float) -> Tuple[int, int]:
+        """Convert frame-space coordinates to overlay logical pixel coordinates."""
+        if self._frame_w > 0 and self._frame_h > 0:
+            cx = int(round(x * self.width() / self._frame_w))
+            cy = int(round(y * self.height() / self._frame_h))
+        else:
+            cx = int(round(x / self._dpr))
+            cy = int(round(y / self._dpr))
+        return cx, cy
+
+    def _rebuild_hover_data(self):
+        """Precompute widget-local dot positions and their calibrated step velocities."""
+        dots: List[Tuple[int, int, int, Optional[float]]] = []
+        for cell_id, pts in self._points_by_cell.items():
+            for i, pt in enumerate(pts):
+                cx, cy = self._scale_xy(pt[0], pt[1])
+                # First point has no preceding step → velocity is None
+                if i == 0:
+                    vel_display = None
+                else:
+                    vel_raw = compute_step_velocity(pts[i - 1], pts[i])
+                    # Convert from px/s → real_units/s using calibration
+                    vel_display = vel_raw * self._units_per_pixel if vel_raw is not None else None
+                dots.append((cx, cy, cell_id, vel_display))
+        self._hover_dots = dots
+
+    _HOVER_RADIUS_SQ = 8 * 8  # hit radius in logical pixels, squared
+
+    def _check_hover(self):
+        """Called by the timer; shows or hides the tooltip based on cursor proximity."""
+        global_pos = QCursor.pos()
+        geo = self.geometry()
+        if not geo.contains(global_pos):
+            if self._current_hover is not None:
+                QToolTip.hideText()
+                self._current_hover = None
+            if self._cursor_overridden:
+                QApplication.restoreOverrideCursor()
+                self._cursor_overridden = False
+            return
+
+        local_x = global_pos.x() - geo.x()
+        local_y = global_pos.y() - geo.y()
+
+        hit: Optional[Tuple[int, Optional[float]]] = None
+        for cx, cy, cell_id, vel in self._hover_dots:
+            if (local_x - cx) ** 2 + (local_y - cy) ** 2 <= self._HOVER_RADIUS_SQ:
+                hit = (cell_id, vel)
+                break
+
+        if hit == self._current_hover:
+            return  # nothing changed — don't flicker the tooltip
+
+        self._current_hover = hit
+        if hit is not None:
+            # Show pointing-hand cursor over a dot
+            if not self._cursor_overridden:
+                QApplication.setOverrideCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                self._cursor_overridden = True
+            cell_id, vel = hit
+            if vel is None:
+                tip = f"Cell {cell_id}\nStep velocity: — (start of track)"
+            else:
+                tip = f"Cell {cell_id}\nStep velocity: {vel:.3f} {self._unit_name}/s"
+            QToolTip.showText(global_pos, tip)
+        else:
+            # Restore normal cursor when not over any dot
+            if self._cursor_overridden:
+                QApplication.restoreOverrideCursor()
+                self._cursor_overridden = False
+            QToolTip.hideText()
 
     def paintEvent(self, _event):
         if not self._points_by_cell:
@@ -335,8 +474,6 @@ class TrackOverlay(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        scale = 1.0 / self._dpr
 
         # Draw each cell's track in its own color
         for cell_id, pts in self._points_by_cell.items():
@@ -351,18 +488,15 @@ class TrackOverlay(QWidget):
                 line_pen.setWidth(1)
                 painter.setPen(line_pen)
                 for i in range(len(pts) - 1):
-                    x1 = int(round(pts[i][0] * scale))
-                    y1 = int(round(pts[i][1] * scale))
-                    x2 = int(round(pts[i + 1][0] * scale))
-                    y2 = int(round(pts[i + 1][1] * scale))
+                    x1, y1 = self._scale_xy(pts[i][0], pts[i][1])
+                    x2, y2 = self._scale_xy(pts[i + 1][0], pts[i + 1][1])
                     painter.drawLine(QPoint(x1, y1), QPoint(x2, y2))
 
             # Dots
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(dot_color)
-            for x, y in pts:
-                cx = int(round(x * scale))
-                cy = int(round(y * scale))
+            for pt in pts:
+                cx, cy = self._scale_xy(pt[0], pt[1])
                 painter.drawEllipse(QPoint(cx, cy), self.DOT_RADIUS, self.DOT_RADIUS)
 
             # Ring around the most recent point
@@ -371,9 +505,7 @@ class TrackOverlay(QWidget):
                 ring_pen.setWidth(1)
                 painter.setPen(ring_pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                x, y = pts[-1]
-                cx = int(round(x * scale))
-                cy = int(round(y * scale))
+                cx, cy = self._scale_xy(pts[-1][0], pts[-1][1])
                 painter.drawEllipse(QPoint(cx, cy), self.RING_RADIUS, self.RING_RADIUS)
 
 
@@ -1091,14 +1223,24 @@ class ScreenshotApp(QMainWindow):
 
     def _refresh_track_overlay(self):
         """Query the database for all cell tracks and update the overlay."""
-        tracks = load_tracks_from_db(self._db_path)
+        tracks, frame_size = load_tracks_from_db(self._db_path)
         if not tracks:
             self.log_msg(f"No tracks found in database ({self._db_path.name}).")
             return
         total_pts = sum(len(v) for v in tracks.values())
-        self.log_msg(f"Loaded {len(tracks)} cell track(s) ({total_pts} points) from DB.")
+        # Compute/update step velocities and find the fastest track
+        fastest_id = compute_and_store_velocities(self._db_path)
+        msg = f"Loaded {len(tracks)} cell track(s) ({total_pts} points) from DB."
+        if fastest_id is not None:
+            msg += f" Fastest track: cell {fastest_id} (shown in red)."
+        self.log_msg(msg)
         self._ensure_track_overlay()
-        self._track_overlay.set_tracks(tracks)
+        # Push current calibration so tooltips display real-world units
+        self._track_overlay.set_display_scale(
+            self.calibration.units_per_pixel,
+            self.calibration.unit_name,
+        )
+        self._track_overlay.set_tracks(tracks, fastest_cell_id=fastest_id, frame_size=frame_size)
         if self._tracks_visible and self.region is not None:
             self._show_track_overlay()
 
@@ -1574,15 +1716,12 @@ class ScreenshotApp(QMainWindow):
             return
 
         geom = screen.geometry()
-        dpr = float(screen.devicePixelRatio())
 
-        local_x = self.region.x - geom.x()
-        local_y = self.region.y - geom.y()
-
-        px_x = int(round(local_x * dpr))
-        px_y = int(round(local_y * dpr))
-        px_w = int(round(self.region.w * dpr))
-        px_h = int(round(self.region.h * dpr))
+        # grabWindow(0, ...) on Qt6/Windows treats x,y,w,h as logical pixels
+        # and internally scales to physical — passing pre-multiplied physical
+        # coords causes double-scaling (captures dpr² times the intended area).
+        log_x = self.region.x - geom.x()
+        log_y = self.region.y - geom.y()
 
         overlay_was_visible = self._roi_overlay is not None and self._roi_overlay.isVisible()
         track_was_visible = self._track_overlay is not None and self._track_overlay.isVisible()
@@ -1593,7 +1732,7 @@ class ScreenshotApp(QMainWindow):
         if overlay_was_visible or track_was_visible:
             QApplication.processEvents()
 
-        pixmap = screen.grabWindow(0, px_x, px_y, px_w, px_h)
+        pixmap = screen.grabWindow(0, log_x, log_y, self.region.w, self.region.h)
 
         if overlay_was_visible:
             self._show_roi_overlay()
@@ -1648,35 +1787,256 @@ def main():
 # Backend helper functions (import these from your tracking code)
 # =============================================================================
 
-def load_tracks_from_db(db_path: Path) -> Dict[int, List[Tuple[float, float]]]:
+def compute_step_velocity(
+    p1: Tuple[float, float, float],
+    p2: Tuple[float, float, float],
+) -> Optional[float]:
+    """
+    Compute instantaneous velocity (pixels/time-unit) between two points.
+
+    Args:
+        p1: (x, y, t) of the earlier point.
+        p2: (x, y, t) of the later point.
+
+    Returns:
+        velocity = distance / Δt, or None if Δt == 0.
+    """
+    x1, y1, t1 = p1
+    x2, y2, t2 = p2
+    dt = t2 - t1
+    if dt == 0:
+        return None
+    distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    return distance / abs(dt)
+
+
+def compute_average_track_velocity(
+    track: List[Tuple[float, float, float]],
+) -> Optional[float]:
+    """
+    Compute the average instantaneous velocity for a cell track.
+
+    Args:
+        track: Ordered list of (x, y, t) points for a single cell.
+
+    Returns:
+        Mean of all valid step velocities, or None if fewer than 2 points
+        or all Δt values are zero.
+    """
+    if len(track) < 2:
+        return None
+    velocities = [
+        v
+        for v in (compute_step_velocity(track[i], track[i + 1]) for i in range(len(track) - 1))
+        if v is not None
+    ]
+    if not velocities:
+        return None
+    return sum(velocities) / len(velocities)
+
+
+def find_fastest_track(
+    tracks: Dict[int, List[Tuple[float, float, float]]],
+) -> Optional[int]:
+    """
+    Identify the cell_id with the highest average instantaneous velocity.
+
+    Args:
+        tracks: Dict of cell_id -> list of (x, y, t).
+
+    Returns:
+        The cell_id of the fastest track, or None if no track has enough points.
+    """
+    best_id: Optional[int] = None
+    best_vel: float = -1.0
+    for cell_id, pts in tracks.items():
+        avg = compute_average_track_velocity(pts)
+        if avg is not None and avg > best_vel:
+            best_vel = avg
+            best_id = cell_id
+    return best_id
+
+
+def compute_and_store_velocities(db_path: Path) -> Optional[int]:
+    """
+    Compute step velocities for any new point-pairs not yet stored, persist them,
+    recalculate per-track average velocities, and return the cell_id of the
+    fastest track.
+
+    The tables ``track_step_velocities`` and ``track_avg_velocities`` are
+    created on first use (idempotent DDL).
+
+    Args:
+        db_path: Path to the SQLite tracking database.
+
+    Returns:
+        cell_id of the track with the highest average velocity, or None.
+    """
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.cursor()
+
+            # Ensure tables exist (safe to call even if already present)
+            cur.executescript("""
+                CREATE TABLE IF NOT EXISTS track_step_velocities (
+                    cell_id INTEGER NOT NULL,
+                    from_frame INTEGER NOT NULL,
+                    to_frame INTEGER NOT NULL,
+                    velocity REAL NOT NULL,
+                    PRIMARY KEY (cell_id, from_frame, to_frame)
+                );
+                CREATE TABLE IF NOT EXISTS track_avg_velocities (
+                    cell_id INTEGER PRIMARY KEY,
+                    avg_velocity REAL NOT NULL,
+                    step_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Load all points with timestamps, ordered per cell
+            cur.execute(
+                """
+                SELECT p.cell_id, p.frame_index,
+                       p.x, p.y,
+                       COALESCE(f.timestamp, p.frame_index) AS t
+                FROM points p
+                LEFT JOIN frames f ON f.frame_index = p.frame_index
+                ORDER BY p.cell_id, p.frame_index
+                """
+            )
+            points_by_cell: Dict[int, List[Tuple[int, float, float, float]]] = {}
+            for cell_id, frame_idx, x, y, t in cur.fetchall():
+                if cell_id not in points_by_cell:
+                    points_by_cell[cell_id] = []
+                points_by_cell[cell_id].append((int(frame_idx), float(x), float(y), float(t)))
+
+            # Collect cell_ids that need avg recalculation (had new steps inserted)
+            cells_with_new_steps: set = set()
+
+            for cell_id, pts in points_by_cell.items():
+                for i in range(len(pts) - 1):
+                    fi, xi, yi, ti = pts[i]
+                    fj, xj, yj, tj = pts[i + 1]
+                    dt = tj - ti
+                    if dt == 0:
+                        continue
+                    vel = math.sqrt((xj - xi) ** 2 + (yj - yi) ** 2) / abs(dt)
+                    # INSERT OR IGNORE: existing steps are left untouched
+                    cur.execute(
+                        """
+                        INSERT OR IGNORE INTO track_step_velocities
+                            (cell_id, from_frame, to_frame, velocity)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (cell_id, fi, fj, vel),
+                    )
+                    if cur.rowcount > 0:
+                        cells_with_new_steps.add(cell_id)
+
+            # Recalculate avg only for cells that gained new steps
+            for cell_id in cells_with_new_steps:
+                cur.execute(
+                    """
+                    SELECT AVG(velocity), COUNT(*)
+                    FROM track_step_velocities
+                    WHERE cell_id = ?
+                    """,
+                    (cell_id,),
+                )
+                avg_vel, step_count = cur.fetchone()
+                if avg_vel is None:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO track_avg_velocities (cell_id, avg_velocity, step_count, updated_at)
+                    VALUES (?, ?, ?, datetime('now'))
+                    ON CONFLICT(cell_id) DO UPDATE SET
+                        avg_velocity = excluded.avg_velocity,
+                        step_count   = excluded.step_count,
+                        updated_at   = excluded.updated_at
+                    """,
+                    (cell_id, avg_vel, step_count),
+                )
+
+            conn.commit()
+
+            # Find the fastest cell across ALL stored averages
+            cur.execute(
+                "SELECT cell_id FROM track_avg_velocities ORDER BY avg_velocity DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _read_png_size(path: Path) -> Optional[Tuple[int, int]]:
+    """Read PNG image dimensions from file header without loading the full image."""
+    try:
+        with open(path, 'rb') as f:
+            if f.read(4) != b'\x89PNG':
+                return None
+            f.seek(16)
+            w = struct.unpack('>I', f.read(4))[0]
+            h = struct.unpack('>I', f.read(4))[0]
+            return w, h
+    except Exception:
+        return None
+
+
+def load_tracks_from_db(
+    db_path: Path,
+) -> Tuple[Dict[int, List[Tuple[float, float, float]]], Optional[Tuple[int, int]]]:
     """
     Load all cell track points from the SQLite tracking database.
 
     Returns:
-        Dict mapping cell_id -> list of (x, y) tuples ordered by frame_index.
-        Coordinates are in the physical pixel space of the captured frame images
-        (i.e. multiply the ROI logical size by the screen DPR to get this space).
-        Returns an empty dict if the database does not exist or has no points.
+        Tuple of:
+          - Dict mapping cell_id -> list of (x, y, t) tuples ordered by frame_index,
+            where t is the frame timestamp (seconds).
+          - Optional (frame_w, frame_h) — pixel dimensions of the images TrackMate
+            processed, read from the first source_path stored in the frames table.
+            None if unavailable.
     """
     if not db_path.exists():
-        return {}
+        return {}, None
     try:
         conn = sqlite3.connect(str(db_path))
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT cell_id, x, y FROM points ORDER BY cell_id, frame_index"
+                """
+                SELECT p.cell_id, p.x, p.y, COALESCE(f.timestamp, p.frame_index)
+                FROM points p
+                LEFT JOIN frames f ON f.frame_index = p.frame_index
+                ORDER BY p.cell_id, p.frame_index
+                """
             )
-            result: Dict[int, List[Tuple[float, float]]] = {}
-            for cell_id, x, y in cursor.fetchall():
+            result: Dict[int, List[Tuple[float, float, float]]] = {}
+            for cell_id, x, y, t in cursor.fetchall():
                 if cell_id not in result:
                     result[cell_id] = []
-                result[cell_id].append((float(x), float(y)))
-            return result
+                result[cell_id].append((float(x), float(y), float(t)))
+
+            # Try to determine frame image dimensions from the stored source paths
+            frame_size: Optional[Tuple[int, int]] = None
+            cursor.execute(
+                "SELECT source_path FROM frames ORDER BY frame_index LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if row:
+                frame_size = _read_png_size(Path(row[0]))
+
+            return result, frame_size
         finally:
             conn.close()
     except Exception:
-        return {}
+        return {}, None
 
 
 def roi_origin_pixel(roi_w: int, roi_h: int, origin: OriginConfig) -> Tuple[int, int]:
