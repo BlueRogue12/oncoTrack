@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QComboBox,
+    QLineEdit,
     QVBoxLayout,
     QHBoxLayout,
     QPlainTextEdit,
@@ -269,9 +270,25 @@ class PipelineWorker(QThread):
 
     finished = Signal(bool, str)
 
-    def __init__(self, batch_path: Path):
+    def __init__(self, batch_path: Path,
+            threshold=None,
+            radius=None,
+            linking=None,
+            gap=None,
+            frame_gap=None,
+            subpixel=None,
+            median=None):
+
         super().__init__()
         self._batch_path = batch_path
+
+        self._threshold = threshold
+        self._radius = radius
+        self._linking = linking
+        self._gap = gap
+        self._frame_gap = frame_gap
+        self._subpixel = subpixel
+        self._median = median
 
     def run(self):
         try:
@@ -282,6 +299,25 @@ class PipelineWorker(QThread):
             from src.config import get_default_config  # type: ignore
 
             config = get_default_config()
+
+            if self._threshold is not None:
+                config.threshold = self._threshold
+
+            if self._radius is not None:
+                config.radius = self._radius
+
+            if self._linking is not None:
+                config.linking_max_distance = self._linking
+
+            if self._gap is not None:
+                config.gap_closing_max_distance = self._gap
+
+            if self._frame_gap is not None:
+                config.max_frame_gap = self._frame_gap
+
+            config.do_subpixel = self._subpixel
+            config.do_median_filter = self._median
+
             tracker = IncrementalTracker(config)
             tracker.process_batch(self._batch_path)
             self.finished.emit(True, "Pipeline completed successfully.")
@@ -442,6 +478,66 @@ class ScreenshotApp(QMainWindow):
         interval_row.addWidget(self.seconds_combo)
         interval_row.addStretch()
         setup_body.addLayout(interval_row)
+
+        settings_row = QHBoxLayout()
+
+        # --- Threshold ---
+        self.threshold_input = QLineEdit()
+        self.threshold_input.setPlaceholderText("Threshold")
+        self.threshold_input.setFixedWidth(80)
+        settings_row.addWidget(QLabel("Threshold:"))
+        settings_row.addWidget(self.threshold_input)
+
+        # --- Radius ---
+        self.radius_input = QLineEdit()
+        self.radius_input.setPlaceholderText("Radius")
+        self.radius_input.setFixedWidth(80)
+        settings_row.addWidget(QLabel("Radius:"))
+        settings_row.addWidget(self.radius_input)
+
+        # --- Subpixel ---
+        self.subpixel_checkbox = QCheckBox("Subpixel")
+        self.subpixel_checkbox.setChecked(True)
+        settings_row.addWidget(self.subpixel_checkbox)
+
+        # --- Median filter ---
+        self.median_checkbox = QCheckBox("Median")
+        self.median_checkbox.setChecked(False)
+        settings_row.addWidget(self.median_checkbox)
+
+        tracking_row = QHBoxLayout()
+
+        self.linking_input = QLineEdit()
+        self.linking_input.setPlaceholderText("Linking")
+        self.linking_input.setFixedWidth(80)
+
+        self.gap_input = QLineEdit()
+        self.gap_input.setPlaceholderText("Gap")
+        self.gap_input.setFixedWidth(80)
+
+        self.frame_gap_input = QLineEdit()
+        self.frame_gap_input.setPlaceholderText("FrameGap")
+        self.frame_gap_input.setFixedWidth(80)
+
+        tracking_row.addWidget(QLabel("Linking:"))
+        tracking_row.addWidget(self.linking_input)
+
+        tracking_row.addWidget(QLabel("Gap:"))
+        tracking_row.addWidget(self.gap_input)
+
+        tracking_row.addWidget(QLabel("Frame Gap:"))
+        tracking_row.addWidget(self.frame_gap_input)
+
+        tracking_row.addStretch()
+
+        setup_body.addLayout(tracking_row)
+
+        settings_row.addStretch()
+        setup_body.addLayout(settings_row)
+
+        settings_row.addStretch()
+
+        setup_body.addLayout(settings_row)
 
         row1 = QHBoxLayout()
         self.select_btn = QPushButton("Define / Redefine ROI")
@@ -927,6 +1023,15 @@ class ScreenshotApp(QMainWindow):
         self.log_msg(f"Test mode {state}")
 
     def _run_pipeline_now(self):
+        threshold = float(self.threshold_input.text()) if self.threshold_input.text() else None
+        radius = float(self.radius_input.text()) if self.radius_input.text() else None
+        linking = float(self.linking_input.text()) if self.linking_input.text() else None
+        gap = float(self.gap_input.text()) if self.gap_input.text() else None
+        frame_gap = int(self.frame_gap_input.text()) if self.frame_gap_input.text() else None
+
+        subpixel = self.subpixel_checkbox.isChecked()
+        median = self.median_checkbox.isChecked()
+
         if self._pipeline_worker is not None and self._pipeline_worker.isRunning():
             self.log_msg("Pipeline already running — skipping.")
             return
@@ -941,7 +1046,17 @@ class ScreenshotApp(QMainWindow):
             return
         self.log_msg(f"Starting pipeline on {batch_path} …")
         self.pipeline_status_label.setText("Pipeline: Running")
-        self._pipeline_worker = PipelineWorker(batch_path)
+        self._pipeline_worker = PipelineWorker(
+            batch_path,
+            threshold=threshold,
+            radius=radius,
+            linking=linking,
+            gap=gap,
+            frame_gap=frame_gap,
+            subpixel=subpixel,
+            median=median
+        )
+
         self._pipeline_worker.finished.connect(self._on_pipeline_finished)
         self._pipeline_worker.start()
         self.update_ui()
