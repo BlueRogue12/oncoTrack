@@ -78,7 +78,7 @@ CAPTURE_OUTPUT_DIR=/mnt/shared/microscope/live_captures
 
 1. **Test with sample data** (recommended for initial testing):
    ```bash
-   FRAMES_PATH=vid1_frames_1-3
+   FRAMES_PATH=vid1_frames
    ```
    - Uses committed sample frames
    - Everyone on the team has the same data
@@ -109,7 +109,7 @@ FRAMES_PATH=/mnt/shared/microscope/live_captures
 
 ```bash
 # 1. Use committed sample data
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 
 # 2. Run pipeline
 ./run_test.sh --clean --visualize --export
@@ -165,7 +165,7 @@ python tools/frameCapture.py
 ### What's Committed to Git
 
 ✅ **Committed** (everyone gets these):
-- `vid1_frames_1-3/` - Sample cell images for testing
+- `vid1_frames/` - Sample cell images for testing
 - `tools/frameCapture.py` - Frame capture GUI
 - `src/` - Tracking pipeline code
 - `.env.example` - Configuration template
@@ -203,7 +203,7 @@ oncoTrack/
 ├── tools/
 │   └── frameCapture.py          ← Frame capture GUI (committed)
 │
-├── vid1_frames_1-3/             ← Sample frames (committed)
+├── vid1_frames/             ← Sample frames (committed)
 │   ├── cell_00001.png
 │   ├── cell_00002.png
 │   └── cell_00003.png
@@ -229,9 +229,9 @@ oncoTrack/
 
 ## Common Questions
 
-### Q: Why are captures/ gitignored but vid1_frames_1-3/ is committed?
+### Q: Why are captures/ gitignored but vid1_frames/ is committed?
 
-**A**: `vid1_frames_1-3/` is **sample data** for testing - everyone should have the same frames to verify the pipeline works correctly. `captures/` is your **personal workspace** for development - each person's captures are different and don't need to be shared.
+**A**: `vid1_frames/` is **sample data** for testing - everyone should have the same frames to verify the pipeline works correctly. `captures/` is your **personal workspace** for development - each person's captures are different and don't need to be shared.
 
 ### Q: Can I commit my captures for others to test with?
 
@@ -254,7 +254,7 @@ FRAMES_PATH=data/batches/my_experiment
 
 ```bash
 # Test with sample data
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 
 # Test with your captures
 FRAMES_PATH=captures
@@ -286,6 +286,6 @@ The capture GUI saves to that location, and the pipeline watches that location. 
 | Variable | Purpose | Development | Production |
 |----------|---------|-------------|------------|
 | `CAPTURE_OUTPUT_DIR` | Where screenshots are saved | `captures/` (local, gitignored) | `/mnt/shared/...` (network drive) |
-| `FRAMES_PATH` | What the pipeline processes | `vid1_frames_1-3` (sample) or `captures/` (your data) | `/mnt/shared/...` (same as capture output) |
+| `FRAMES_PATH` | What the pipeline processes | `vid1_frames` (sample) or `captures/` (your data) | `/mnt/shared/...` (same as capture output) |
 
 **Key Insight**: In development, these are **separate** (manual workflow). In production, they're the **same location** (automatic workflow).

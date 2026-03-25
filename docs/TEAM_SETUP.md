@@ -57,7 +57,7 @@ Each team member can have frames stored in different locations. Configure your `
 #### Scenario 1: Frames in Project Directory
 ```bash
 # .env
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 ```
 
 Run test:
@@ -175,10 +175,10 @@ FIJI_PATH=/path/to/your/fiji/executable
 # Default path to frames directory
 # Can be relative to project root or absolute path
 # Examples:
-#   vid1_frames_1-3
+#   vid1_frames
 #   data/batches/my_batch
 #   /mnt/shared/microscope/captures
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 
 
 # ==== OPTIONAL: Advanced configuration ====

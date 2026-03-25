@@ -54,10 +54,10 @@ pip install -r requirements.txt
 nano .env
 
 # Run pipeline on sample data
-./scripts/run_test.sh --batch vid1_frames_1-3 --visualize --export
+./scripts/run_test.sh --batch vid1_frames --visualize --export
 
 # Or use Python directly
-python -m src.main --batch vid1_frames_1-3 --visualize --export
+python -m src.main --batch vid1_frames --visualize --export
 ```
 
 **Status**: Complete implementation
@@ -81,6 +81,15 @@ Quick links:
 - [scripts/setup_env.sh](scripts/setup_env.sh) - One-time environment setup
 - [scripts/run_test.sh](scripts/run_test.sh) - Run pipeline tests
 - [scripts/verify_setup.sh](scripts/verify_setup.sh) - Verify installation
+- [scripts/clear_db.py](scripts/clear_db.py) - Clear all tracking data (run before each new experiment)
+
+### Clear the database
+
+Run this before starting a new experiment session to wipe all tracking data while keeping the schema intact:
+
+```bash
+python scripts/clear_db.py
+```
 
 ## Architecture
 

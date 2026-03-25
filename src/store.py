@@ -120,6 +120,29 @@ class TrackingStore:
                 )
             """)
             
+            # Step velocities: one row per consecutive point pair in a track
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS track_step_velocities (
+                    cell_id INTEGER NOT NULL,
+                    from_frame INTEGER NOT NULL,
+                    to_frame INTEGER NOT NULL,
+                    velocity REAL NOT NULL,
+                    PRIMARY KEY (cell_id, from_frame, to_frame),
+                    FOREIGN KEY (cell_id) REFERENCES cells(cell_id)
+                )
+            """)
+
+            # Per-track average velocity (recalculated after each pipeline run)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS track_avg_velocities (
+                    cell_id INTEGER PRIMARY KEY,
+                    avg_velocity REAL NOT NULL,
+                    step_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (cell_id) REFERENCES cells(cell_id)
+                )
+            """)
+
             # Create indices for performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_points_cell ON points(cell_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_points_frame ON points(frame_index)")

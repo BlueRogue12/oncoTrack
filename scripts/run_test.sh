@@ -71,7 +71,7 @@ done
 
 # Use command-line batch path, or fall back to FRAMES_PATH from .env, or default
 if [ -z "$BATCH_PATH" ]; then
-    BATCH_PATH="${FRAMES_PATH:-vid1_frames_1-3}"
+    BATCH_PATH="${FRAMES_PATH:-vid1_frames}"
 fi
 
 echo "Configuration:"

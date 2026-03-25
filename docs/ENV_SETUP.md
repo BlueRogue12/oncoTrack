@@ -116,7 +116,7 @@ FIJI_PATH=/home/username/Fiji/fiji-linux-x64
 
 # Recommended: Default path to frames directory
 # Can be relative (to project root) or absolute
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 
 # Optional: Override database path
 DB_PATH=data/tracking.db
@@ -134,7 +134,7 @@ Each team member can configure their own frame location:
 
 **Developer 1** (local project folder):
 ```bash
-FRAMES_PATH=vid1_frames_1-3
+FRAMES_PATH=vid1_frames
 ```
 
 **Developer 2** (different batch):

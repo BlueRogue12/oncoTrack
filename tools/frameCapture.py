@@ -2,13 +2,18 @@ import sys
 import os
 import json
 import math
-from dataclasses import dataclass
+import sqlite3
+import struct
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, List
 
-from PySide6.QtCore import Qt, QRect, QPoint, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QFont
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from PySide6.QtCore import Qt, QRect, QPoint, QTimer, Signal, QThread
+from PySide6.QtGui import QGuiApplication, QPainter, QColor, QPen, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -16,194 +21,66 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QComboBox,
+    QLineEdit,
     QVBoxLayout,
     QHBoxLayout,
-    QRubberBand,
     QPlainTextEdit,
     QMessageBox,
+    QCheckBox,
+    QToolTip,
     QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QLineEdit,
+    QSplitter,
+    QSizePolicy,
+    QFrame,
+)
+
+from src.capture_controller import CaptureController
+from src.frame_capture_models import (
+    CaptureRegion,
+    Calibration,
+    OriginConfig,
+    AxisConvention,
+    get_project_root,
+    get_output_folder,
+    get_latest_calibration_path,
+    get_latest_session_config_path,
+)
+from src.frame_capture_overlays import (
+    CalibrationDialog,
+    ROIOverlay,
+    CalibrationOverlay,
+    OriginPickerOverlay,
+    ScreenSelector,
 )
 
 
 # ----------------------------
-# Data models
+# Track Overlay (cell tracks from database)
 # ----------------------------
 
-@dataclass(frozen=True)
-class CaptureRegion:
-    x: int
-    y: int
-    w: int
-    h: int
+class TrackOverlay(QWidget):
+    """Transparent overlay that draws cell track dots and connecting lines from the DB."""
 
+    DOT_RADIUS = 2
+    RING_RADIUS = 7
 
-@dataclass
-class Calibration:
-    """Session-only calibration, also exported to JSON for downstream use."""
-    units_per_pixel: float = 1.0
-    unit_name: str = "px"  # default until calibrated
+    _PALETTE = [
+        (50, 180, 50),
+        (50, 120, 220),
+        (220, 160, 0),
+        (180, 50, 220),
+        (0, 200, 200),
+        (220, 110, 0),
+        (220, 50, 150),
+        (100, 220, 80),
+        (80, 180, 220),
+        (160, 100, 220),
+    ]
+    _RED = (220, 50, 50)
+    _HOVER_RADIUS_SQ = 8 * 8
 
-    @property
-    def pixels_per_unit(self) -> float:
-        if self.units_per_pixel == 0:
-            return float("inf")
-        return 1.0 / self.units_per_pixel
-
-    def to_dict(self) -> dict:
-        return {
-            "units_per_pixel": self.units_per_pixel,
-            "pixels_per_unit": self.pixels_per_unit,
-            "unit_name": self.unit_name,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-
-
-@dataclass
-class OriginConfig:
-    """
-    Session-only origin configuration stored as normalized coordinates within the ROI.
-    """
-    x_norm: float = 1.0
-    y_norm: float = 0.0
-    mode_name: str = "Top-Right"  # preset name or "Custom"
-
-    def to_dict(self) -> dict:
-        return {
-            "x_norm": float(self.x_norm),
-            "y_norm": float(self.y_norm),
-            "mode_name": self.mode_name,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-
-
-@dataclass
-class AxisConvention:
-    """
-    Defines how ROI-local pixel (u,v) maps to user (X,Y).
-
-    Pixel convention assumed by images/screens:
-      u: horizontal (right positive)
-      v: vertical (down positive)
-
-    We store:
-      X uses: 'horizontal' or 'vertical'
-      X positive direction: for horizontal -> 'right'/'left'; for vertical -> 'down'/'up'
-      Y uses: 'horizontal' or 'vertical'
-      Y positive direction: similarly
-    """
-    x_axis_source: str = "vertical"     # default for your main user
-    x_positive: str = "down"            # +X down
-    y_axis_source: str = "horizontal"   # +Y left
-    y_positive: str = "left"
-
-    def to_dict(self) -> dict:
-        return {
-            "x_axis": {"source": self.x_axis_source, "positive": self.x_positive},
-            "y_axis": {"source": self.y_axis_source, "positive": self.y_positive},
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-
-    def is_valid(self) -> bool:
-        # Must use one horizontal and one vertical
-        return self.x_axis_source != self.y_axis_source
-
-    def describe(self) -> str:
-        x = f"X={self.x_axis_source} (+{self.x_positive})"
-        y = f"Y={self.y_axis_source} (+{self.y_positive})"
-        return f"{x}, {y}"
-
-
-# ----------------------------
-# Paths / output
-# ----------------------------
-
-def get_project_root() -> Path:
-    return Path(__file__).parent.parent
-
-
-def get_output_folder() -> Path:
-    project_root = get_project_root()
-    out = project_root / "captures"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
-
-def get_latest_calibration_path(output_dir: Path) -> Path:
-    return output_dir / "latest_calibration.json"
-
-
-def get_latest_session_config_path(output_dir: Path) -> Path:
-    return output_dir / "latest_session_config.json"
-
-
-# ----------------------------
-# Calibration dialog
-# ----------------------------
-
-class CalibrationDialog(QDialog):
-    UNIT_OPTIONS = ["nm", "µm", "mm", "cm", "m"]
-
-    def __init__(self, parent: QWidget, pixel_length: float):
-        super().__init__(parent)
-        self.setWindowTitle("Calibrate Scale")
-        self.setModal(True)
-
-        self.length_edit = QLineEdit()
-        self.length_edit.setPlaceholderText("e.g., 5")
-
-        self.unit_combo = QComboBox()
-        self.unit_combo.addItems(self.UNIT_OPTIONS)
-        self.unit_combo.setCurrentText("µm")
-
-        info = QLabel(f"Line length: {pixel_length:.2f} px")
-        info.setStyleSheet("color: #666;")
-
-        form = QFormLayout()
-        form.addRow("Real length:", self.length_edit)
-        form.addRow("Units:", self.unit_combo)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(info)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
-
-        self._result: Optional[Tuple[float, str]] = None
-
-    def accept(self):
-        raw = self.length_edit.text().strip()
-        try:
-            val = float(raw)
-            if val <= 0:
-                raise ValueError()
-        except Exception:
-            QMessageBox.warning(self, "Invalid length", "Please enter a positive number (e.g., 5).")
-            return
-
-        unit = str(self.unit_combo.currentText())
-        self._result = (val, unit)
-        super().accept()
-
-    def get_result(self) -> Optional[Tuple[float, str]]:
-        return self._result
-
-
-# ----------------------------
-# ROI Overlay (border + origin marker)
-# ----------------------------
-
-class ROIOverlay(QWidget):
     def __init__(self):
         super().__init__(None)
-
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -213,337 +90,239 @@ class ROIOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        self._border_pen = QPen(QColor(0, 255, 0, 230))
-        self._border_pen.setWidth(2)
+        self._points_by_cell: Dict[int, List[Tuple[float, float, float]]] = {}
+        self._frame_w: int = 0
+        self._frame_h: int = 0
+        self._dpr: float = 1.0
+        self._cell_color_index: Dict[int, int] = {}
+        self._next_color_index: int = 0
+        self._fastest_cell_id: Optional[int] = None
 
-        self._origin: Optional[OriginConfig] = None
+        self._hover_dots: List[Tuple[int, int, int, Optional[float]]] = []
+        self._current_hover: Optional[Tuple[int, Optional[float]]] = None
 
-        # Origin marker: neon green, thicker than border
-        self._origin_pen = QPen(QColor(0, 255, 0, 255))
-        self._origin_pen.setWidth(3)
+        self._units_per_pixel: float = 1.0
+        self._unit_name: str = "px"
+        self._cursor_overridden: bool = False
 
-        # NEW: allow hiding marker during capture
-        self._show_origin_marker: bool = True
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(50)
+        self._hover_timer.timeout.connect(self._check_hover)
+
+    def _color_for_cell(self, cell_id: int) -> Tuple[int, int, int]:
+        if cell_id == self._fastest_cell_id:
+            return self._RED
+        if cell_id not in self._cell_color_index:
+            self._cell_color_index[cell_id] = self._next_color_index % len(self._PALETTE)
+            self._next_color_index += 1
+        return self._PALETTE[self._cell_color_index[cell_id]]
 
     def set_region_global(self, region: CaptureRegion):
         self.setGeometry(region.x, region.y, region.w, region.h)
+        self._rebuild_hover_data()
         self.update()
 
-    def set_origin(self, origin: Optional[OriginConfig]):
-        self._origin = origin
+    def set_tracks(
+        self,
+        points_by_cell: Dict[int, List[Tuple[float, float, float]]],
+        fastest_cell_id: Optional[int] = None,
+        frame_size: Optional[Tuple[int, int]] = None,
+    ):
+        self._points_by_cell = points_by_cell
+        self._fastest_cell_id = fastest_cell_id
+        if frame_size and frame_size[0] > 0 and frame_size[1] > 0:
+            self._frame_w, self._frame_h = frame_size
+        else:
+            self._frame_w = 0
+            self._frame_h = 0
+        self._rebuild_hover_data()
         self.update()
 
-    def set_show_origin_marker(self, show: bool):
-        self._show_origin_marker = bool(show)
+    def set_dpr(self, dpr: float):
+        self._dpr = max(0.01, float(dpr))
+        self._rebuild_hover_data()
         self.update()
+
+    def set_display_scale(self, units_per_pixel: float, unit_name: str):
+        self._units_per_pixel = max(1e-12, float(units_per_pixel))
+        self._unit_name = unit_name or "px"
+        self._rebuild_hover_data()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._hover_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._hover_timer.stop()
+        QToolTip.hideText()
+        self._current_hover = None
+        if self._cursor_overridden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_overridden = False
+
+    def _scale_xy(self, x: float, y: float) -> Tuple[int, int]:
+        if self._frame_w > 0 and self._frame_h > 0:
+            cx = int(round(x * self.width() / self._frame_w))
+            cy = int(round(y * self.height() / self._frame_h))
+        else:
+            cx = int(round(x / self._dpr))
+            cy = int(round(y / self._dpr))
+        return cx, cy
+
+    def _rebuild_hover_data(self):
+        dots: List[Tuple[int, int, int, Optional[float]]] = []
+        for cell_id, pts in self._points_by_cell.items():
+            for i, pt in enumerate(pts):
+                cx, cy = self._scale_xy(pt[0], pt[1])
+                if i == 0:
+                    vel_display = None
+                else:
+                    vel_raw = compute_step_velocity(pts[i - 1], pts[i])
+                    vel_display = vel_raw * self._units_per_pixel if vel_raw is not None else None
+                dots.append((cx, cy, cell_id, vel_display))
+        self._hover_dots = dots
+
+    def _check_hover(self):
+        global_pos = QCursor.pos()
+        geo = self.geometry()
+        if not geo.contains(global_pos):
+            if self._current_hover is not None:
+                QToolTip.hideText()
+                self._current_hover = None
+            if self._cursor_overridden:
+                QApplication.restoreOverrideCursor()
+                self._cursor_overridden = False
+            return
+
+        local_x = global_pos.x() - geo.x()
+        local_y = global_pos.y() - geo.y()
+
+        hit: Optional[Tuple[int, Optional[float]]] = None
+        for cx, cy, cell_id, vel in self._hover_dots:
+            if (local_x - cx) ** 2 + (local_y - cy) ** 2 <= self._HOVER_RADIUS_SQ:
+                hit = (cell_id, vel)
+                break
+
+        if hit == self._current_hover:
+            return
+
+        self._current_hover = hit
+        if hit is not None:
+            if not self._cursor_overridden:
+                QApplication.setOverrideCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                self._cursor_overridden = True
+            cell_id, vel = hit
+            if vel is None:
+                tip = f"Cell {cell_id}\nStep velocity: — (start of track)"
+            else:
+                tip = f"Cell {cell_id}\nStep velocity: {vel:.3f} {self._unit_name}/s"
+            QToolTip.showText(global_pos, tip)
+        else:
+            if self._cursor_overridden:
+                QApplication.restoreOverrideCursor()
+                self._cursor_overridden = False
+            QToolTip.hideText()
 
     def paintEvent(self, _event):
+        if not self._points_by_cell:
+            return
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        painter.setPen(self._border_pen)
-        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        for cell_id, pts in self._points_by_cell.items():
+            r, g, b = self._color_for_cell(cell_id)
+            line_color = QColor(r, g, b, 150)
+            dot_color = QColor(r, g, b, 220)
+            ring_color = QColor(r, g, b, 200)
 
-        # Origin marker only if allowed
-        if self._origin is not None and self._show_origin_marker:
-            w = max(1, self.width())
-            h = max(1, self.height())
+            if len(pts) >= 2:
+                line_pen = QPen(line_color)
+                line_pen.setWidth(1)
+                painter.setPen(line_pen)
+                for i in range(len(pts) - 1):
+                    x1, y1 = self._scale_xy(pts[i][0], pts[i][1])
+                    x2, y2 = self._scale_xy(pts[i + 1][0], pts[i + 1][1])
+                    painter.drawLine(QPoint(x1, y1), QPoint(x2, y2))
 
-            x_norm = max(0.0, min(1.0, float(self._origin.x_norm)))
-            y_norm = max(0.0, min(1.0, float(self._origin.y_norm)))
-
-            ox = int(round(x_norm * (w - 1)))
-            oy = int(round(y_norm * (h - 1)))
-
-            size = 12
-            painter.setPen(self._origin_pen)
-            painter.drawLine(ox - size, oy, ox + size, oy)
-            painter.drawLine(ox, oy - size, ox, oy + size)
-
-            painter.setBrush(QColor(0, 255, 0, 255))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(QPoint(ox, oy), 3, 3)
+            painter.setBrush(dot_color)
+            for pt in pts:
+                cx, cy = self._scale_xy(pt[0], pt[1])
+                painter.drawEllipse(QPoint(cx, cy), self.DOT_RADIUS, self.DOT_RADIUS)
+
+            if pts:
+                ring_pen = QPen(ring_color)
+                ring_pen.setWidth(1)
+                painter.setPen(ring_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                cx, cy = self._scale_xy(pts[-1][0], pts[-1][1])
+                painter.drawEllipse(QPoint(cx, cy), self.RING_RADIUS, self.RING_RADIUS)
 
 
 # ----------------------------
-# Calibration Overlay (interactive line draw)
+# Pipeline Worker (background thread)
 # ----------------------------
 
-class CalibrationOverlay(QWidget):
-    calibrated = Signal(float, float, float, float)
-    cancelled = Signal()
+class PipelineWorker(QThread):
+    """Runs IncrementalTracker.process_batch() in a background thread."""
 
-    def __init__(self, region: CaptureRegion):
-        super().__init__(None)
-        self._region = region
+    finished = Signal(bool, str)
 
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setGeometry(region.x, region.y, region.w, region.h)
+    def __init__(self, batch_path: Path,
+            threshold=None,
+            radius=None,
+            linking=None,
+            gap=None,
+            frame_gap=None,
+            subpixel=None,
+            median=None):
 
-        self._line_pen = QPen(QColor(255, 215, 0, 240))
-        self._line_pen.setWidth(3)
+        super().__init__()
+        self._batch_path = batch_path
 
-        self._hint_pen = QPen(QColor(255, 255, 255, 220))
-        self._hint_pen.setWidth(1)
+        self._threshold = threshold
+        self._radius = radius
+        self._linking = linking
+        self._gap = gap
+        self._frame_gap = frame_gap
+        self._subpixel = subpixel
+        self._median = median
 
-        self._start: Optional[QPoint] = None
-        self._end: Optional[QPoint] = None
-        self._drawing: bool = False
-        self._finalized: bool = False
-
-    def start(self):
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.grabMouse()
-        self.grabKeyboard()
-
-    def stop(self):
-        self.release_input_grab()
-        self.close()
-
-    def release_input_grab(self):
+    def run(self):
         try:
-            self.releaseMouse()
-        except Exception:
-            pass
-        try:
-            self.releaseKeyboard()
-        except Exception:
-            pass
+            project_root = get_project_root()
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+            from src.main import IncrementalTracker  # type: ignore
+            from src.config import get_default_config  # type: ignore
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            self.cancelled.emit()
-            self.stop()
-            return
-        super().keyPressEvent(event)
+            config = get_default_config()
 
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        if self._finalized:
-            return
-        self._start = event.position().toPoint()
-        self._end = self._start
-        self._drawing = True
-        self.update()
+            if self._threshold is not None:
+                config.threshold = self._threshold
 
-    def mouseMoveEvent(self, event):
-        if not self._drawing or self._start is None or self._finalized:
-            return
-        self._end = event.position().toPoint()
-        self.update()
+            if self._radius is not None:
+                config.radius = self._radius
 
-    def mouseReleaseEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        if self._start is None or self._end is None or self._finalized:
-            return
+            if self._linking is not None:
+                config.linking_max_distance = self._linking
 
-        self._drawing = False
-        length = math.hypot(self._end.x() - self._start.x(), self._end.y() - self._start.y())
-        if length < 10:
-            self.cancelled.emit()
-            self.stop()
-            return
+            if self._gap is not None:
+                config.gap_closing_max_distance = self._gap
 
-        self._finalized = True
-        self.update()
-        self.release_input_grab()
+            if self._frame_gap is not None:
+                config.max_frame_gap = self._frame_gap
 
-        self.calibrated.emit(
-            float(self._start.x()), float(self._start.y()), float(self._end.x()), float(self._end.y())
-        )
+            config.do_subpixel = self._subpixel
+            config.do_median_filter = self._median
 
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 60))
-
-        painter.setPen(self._hint_pen)
-        painter.setFont(QFont("Segoe UI", 10))
-        painter.drawText(12, 24, "Calibration: drag a line to set known distance. Esc to cancel.")
-
-        if self._start is not None and self._end is not None:
-            painter.setPen(self._line_pen)
-            painter.drawLine(self._start, self._end)
-
-
-# ----------------------------
-# Origin picker overlay (single-click sets origin)
-# ----------------------------
-
-class OriginPickerOverlay(QWidget):
-    selected = Signal(float, float)
-    cancelled = Signal()
-
-    def __init__(self, region: CaptureRegion):
-        super().__init__(None)
-        self._region = region
-
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setGeometry(region.x, region.y, region.w, region.h)
-
-        self._hint_pen = QPen(QColor(255, 255, 255, 220))
-        self._hint_pen.setWidth(1)
-
-    def start(self):
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.grabMouse()
-        self.grabKeyboard()
-
-    def stop(self):
-        self.release_input_grab()
-        self.close()
-
-    def release_input_grab(self):
-        try:
-            self.releaseMouse()
-        except Exception:
-            pass
-        try:
-            self.releaseKeyboard()
-        except Exception:
-            pass
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            self.cancelled.emit()
-            self.stop()
-            return
-        super().keyPressEvent(event)
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-
-        p = event.position().toPoint()
-        w = max(1, self.width())
-        h = max(1, self.height())
-
-        x_norm = max(0.0, min(1.0, p.x() / float(w - 1) if w > 1 else 0.0))
-        y_norm = max(0.0, min(1.0, p.y() / float(h - 1) if h > 1 else 0.0))
-
-        self.selected.emit(x_norm, y_norm)
-        self.stop()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 60))
-        painter.setPen(self._hint_pen)
-        painter.setFont(QFont("Segoe UI", 10))
-        painter.drawText(12, 24, "Pick Origin: click inside ROI. (Esc cancels)")
-
-
-# ----------------------------
-# Screen selector
-# ----------------------------
-
-class ScreenSelector(QWidget):
-    selected_global = Signal(QRect)
-    cancelled = Signal()
-
-    def __init__(self):
-        super().__init__(None)
-
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-
-        self._origin_global: QPoint | None = None
-        self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self)
-        self._rubber.hide()
-
-        screen = QGuiApplication.primaryScreen()
-        self._virtual = screen.virtualGeometry() if screen else QRect(0, 0, 1920, 1080)
-        self.setGeometry(self._virtual)
-
-    def start(self):
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.grabMouse()
-        self.grabKeyboard()
-
-    def stop(self):
-        try:
-            self.releaseMouse()
-        except Exception:
-            pass
-        try:
-            self.releaseKeyboard()
-        except Exception:
-            pass
-        self._rubber.hide()
-        self.close()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
-        painter.setPen(QPen(QColor(255, 255, 255, 230)))
-        painter.drawText(
-            20,
-            35,
-            "Drag to define ROI. Release to set. Press Esc to cancel. (ROI must stay on one monitor.)",
-        )
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            self.cancelled.emit()
-            self.stop()
-            return
-        super().keyPressEvent(event)
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        self._origin_global = event.globalPosition().toPoint()
-        origin_local = self.mapFromGlobal(self._origin_global)
-        self._rubber.setGeometry(QRect(origin_local, QPoint()))
-        self._rubber.show()
-
-    def mouseMoveEvent(self, event):
-        if self._origin_global is None:
-            return
-        current_global = event.globalPosition().toPoint()
-        origin_local = self.mapFromGlobal(self._origin_global)
-        current_local = self.mapFromGlobal(current_global)
-        self._rubber.setGeometry(QRect(origin_local, current_local).normalized())
-
-    def mouseReleaseEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton or self._origin_global is None:
-            return
-        end_global = event.globalPosition().toPoint()
-        rect_global = QRect(self._origin_global, end_global).normalized()
-        self._origin_global = None
-
-        if rect_global.width() < 5 or rect_global.height() < 5:
-            self.cancelled.emit()
-            self.stop()
-            return
-
-        self.selected_global.emit(rect_global)
-        self.stop()
+            tracker = IncrementalTracker(config)
+            tracker.process_batch(self._batch_path)
+            self.finished.emit(True, "Pipeline completed successfully.")
+        except Exception as exc:
+            self.finished.emit(False, f"Pipeline error: {exc}")
 
 
 # ----------------------------
@@ -565,31 +344,48 @@ class ScreenshotApp(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("OncoTrack: Frame Capture")
-        self.resize(980, 560)
+        self.resize(860,620)
 
         self.output_dir = get_output_folder()
-        self.region: CaptureRegion | None = None
+        self.region: Optional[CaptureRegion] = None
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.capture)
+        self.capture_controller = CaptureController()
+        self.capture_controller.on_frame_saved = self._on_frame_saved
+        self.capture_controller.on_capture_error = self.log_msg
+        self.capture_controller.before_capture_hook = self._before_capture_hook
+        self.capture_controller.after_capture_hook = self._after_capture_hook
 
-        self._selector: ScreenSelector | None = None
-        self._roi_overlay: ROIOverlay | None = None
+        self._selector: Optional[ScreenSelector] = None
+        self._roi_overlay: Optional[ROIOverlay] = None
         self._roi_box_enabled: bool = True
 
-        # Calibration state
+        self._track_overlay: Optional[TrackOverlay] = None
+        self._tracks_visible: bool = False
+
+        self._db_path: Path = get_project_root() / "data" / "tracking.db"
+        self._pipeline_timer: QTimer = QTimer(self)
+        self._pipeline_timer.timeout.connect(self._run_pipeline_now)
+        self._pipeline_worker: Optional[PipelineWorker] = None
+        self._test_mode: bool = False
+
         self.calibration: Calibration = Calibration(units_per_pixel=1.0, unit_name="px")
         self._cal_overlay: Optional[CalibrationOverlay] = None
 
-        # Origin state
         self.origin: OriginConfig = OriginConfig(x_norm=1.0, y_norm=0.0, mode_name="Top-Right")
         self._origin_overlay: Optional[OriginPickerOverlay] = None
 
-        # Axis convention
         self.axis_conv: AxisConvention = AxisConvention(
-            x_axis_source="vertical", x_positive="down",
-            y_axis_source="horizontal", y_positive="left"
+            x_axis_source="vertical",
+            x_positive="down",
+            y_axis_source="horizontal",
+            y_positive="left",
         )
+        self.main_splitter: Optional[QSplitter] = None
+        self.control_panel: Optional[QWidget] = None
+        self.visualization_panel: Optional[QWidget] = None
+        self.setup_section: Optional[QWidget] = None
+        self.run_section: Optional[QWidget] = None
+        self.status_section: Optional[QWidget] = None
 
         self.build_ui()
         self.update_ui()
@@ -598,38 +394,69 @@ class ScreenshotApp(QMainWindow):
     def build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
 
-        label_style = "color: #666;"
-        status_style = "font-weight: 600;"
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(8)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        root_layout.addWidget(self.main_splitter)
+
+        # ----------------------------
+        # Control panel
+        # ----------------------------
+        self.control_panel = QWidget()
+        self.control_panel.setMinimumWidth(420)
+        control_layout = QVBoxLayout(self.control_panel)
+        control_layout.setContentsMargins(6, 6, 6, 6)
+        control_layout.setSpacing(8)
+
+        # Top controls section
+        top_section, top_body = self._make_section("Session")
+        control_layout.addWidget(top_section)
+
+        panel_row = QHBoxLayout()
+        panel_row.addWidget(QLabel("Panel position:"))
+
+        self.panel_position_combo = QComboBox()
+        self.panel_position_combo.addItems(["Left", "Right", "Top", "Bottom"])
+        self.panel_position_combo.setCurrentText("Right")
+        self.panel_position_combo.currentTextChanged.connect(self.on_panel_position_changed)
+
+        panel_row.addWidget(self.panel_position_combo)
+        panel_row.addStretch()
+        top_body.addLayout(panel_row)
 
         self.folder_label = QLabel(f"Save folder: {self.output_dir}")
-        self.folder_label.setStyleSheet(label_style)
-        layout.addWidget(self.folder_label)
+        self.folder_label.setWordWrap(True)
+        top_body.addWidget(self.folder_label)
 
         self.region_label = QLabel("ROI: (none)")
-        self.region_label.setStyleSheet(label_style)
-        layout.addWidget(self.region_label)
+        self.region_label.setWordWrap(True)
+        top_body.addWidget(self.region_label)
 
-        status_row = QHBoxLayout()
+        summary_row = QHBoxLayout()
         self.origin_label = QLabel("Origin: Top-Right")
-        self.origin_label.setStyleSheet("font-weight: 600; color: #2b2b2b;")
-        status_row.addWidget(self.origin_label)
-
-        status_row.addSpacing(14)
-
         self.axis_label = QLabel("Axes: X=vertical (+down), Y=horizontal (+left)")
-        self.axis_label.setStyleSheet("font-weight: 600; color: #2b2b2b;")
-        status_row.addWidget(self.axis_label)
-
-        status_row.addSpacing(14)
-
         self.cal_label = QLabel("Scale: not set")
-        self.cal_label.setStyleSheet("font-weight: 600; color: #2b2b2b;")
-        status_row.addWidget(self.cal_label)
 
-        status_row.addStretch()
-        layout.addLayout(status_row)
+        self.origin_label.setWordWrap(True)
+        self.axis_label.setWordWrap(True)
+        self.cal_label.setWordWrap(True)
+
+        summary_row.addWidget(self.origin_label, 1)
+        summary_row.addWidget(self.axis_label, 1)
+        summary_row.addWidget(self.cal_label, 1)
+        top_body.addLayout(summary_row)
+
+        # ----------------------------
+        # Setup section
+        # ----------------------------
+        self.setup_section, setup_body = self._make_section("Setup")
+        control_layout.addWidget(self.setup_section)
 
         interval_row = QHBoxLayout()
         interval_row.addWidget(QLabel("Capture interval:"))
@@ -647,13 +474,71 @@ class ScreenshotApp(QMainWindow):
 
         interval_row.addWidget(QLabel("min"))
         interval_row.addWidget(self.minutes_combo)
-        interval_row.addSpacing(12)
         interval_row.addWidget(QLabel("sec"))
         interval_row.addWidget(self.seconds_combo)
         interval_row.addStretch()
-        layout.addLayout(interval_row)
+        setup_body.addLayout(interval_row)
 
-        # Row 1
+        settings_row = QHBoxLayout()
+
+        # --- Threshold ---
+        self.threshold_input = QLineEdit()
+        self.threshold_input.setPlaceholderText("Threshold")
+        self.threshold_input.setFixedWidth(80)
+        settings_row.addWidget(QLabel("Threshold:"))
+        settings_row.addWidget(self.threshold_input)
+
+        # --- Radius ---
+        self.radius_input = QLineEdit()
+        self.radius_input.setPlaceholderText("Radius")
+        self.radius_input.setFixedWidth(80)
+        settings_row.addWidget(QLabel("Radius:"))
+        settings_row.addWidget(self.radius_input)
+
+        # --- Subpixel ---
+        self.subpixel_checkbox = QCheckBox("Subpixel")
+        self.subpixel_checkbox.setChecked(True)
+        settings_row.addWidget(self.subpixel_checkbox)
+
+        # --- Median filter ---
+        self.median_checkbox = QCheckBox("Median")
+        self.median_checkbox.setChecked(False)
+        settings_row.addWidget(self.median_checkbox)
+
+        tracking_row = QHBoxLayout()
+
+        self.linking_input = QLineEdit()
+        self.linking_input.setPlaceholderText("Linking")
+        self.linking_input.setFixedWidth(80)
+
+        self.gap_input = QLineEdit()
+        self.gap_input.setPlaceholderText("Gap")
+        self.gap_input.setFixedWidth(80)
+
+        self.frame_gap_input = QLineEdit()
+        self.frame_gap_input.setPlaceholderText("FrameGap")
+        self.frame_gap_input.setFixedWidth(80)
+
+        tracking_row.addWidget(QLabel("Linking:"))
+        tracking_row.addWidget(self.linking_input)
+
+        tracking_row.addWidget(QLabel("Gap:"))
+        tracking_row.addWidget(self.gap_input)
+
+        tracking_row.addWidget(QLabel("Frame Gap:"))
+        tracking_row.addWidget(self.frame_gap_input)
+
+        tracking_row.addStretch()
+
+        setup_body.addLayout(tracking_row)
+
+        settings_row.addStretch()
+        setup_body.addLayout(settings_row)
+
+        settings_row.addStretch()
+
+        setup_body.addLayout(settings_row)
+
         row1 = QHBoxLayout()
         self.select_btn = QPushButton("Define / Redefine ROI")
 
@@ -677,51 +562,58 @@ class ScreenshotApp(QMainWindow):
         self.clear_cal_btn.clicked.connect(self.clear_calibration)
 
         row1.addWidget(self.select_btn)
-        row1.addSpacing(8)
         row1.addWidget(QLabel("Origin:"))
         row1.addWidget(self.origin_combo)
         row1.addWidget(self.pick_origin_btn)
         row1.addWidget(self.reset_origin_btn)
-        row1.addSpacing(10)
         row1.addWidget(self.calibrate_btn)
         row1.addWidget(self.clear_cal_btn)
         row1.addStretch()
-        layout.addLayout(row1)
+        setup_body.addLayout(row1)
 
-        # Row 2: Axis mapping controls
-        row_axis = QHBoxLayout()
-        row_axis.addWidget(QLabel("User axes:"))
+        axis_title = QLabel("User axes:")
+        axis_title.setStyleSheet("font-weight: 600;")
+        setup_body.addWidget(axis_title)
 
         self.x_axis_source_combo = QComboBox()
         self.x_axis_source_combo.addItems(self.AXIS_SOURCE_OPTIONS)
         self.x_axis_source_combo.setCurrentText(self.axis_conv.x_axis_source)
-        self.x_axis_source_combo.currentIndexChanged.connect(self.on_axis_config_changed)
+        self.x_axis_source_combo.currentTextChanged.connect(self.on_axis_config_changed)
 
         self.x_axis_pos_combo = QComboBox()
-        self.x_axis_pos_combo.currentIndexChanged.connect(self.on_axis_config_changed)
+        self.x_axis_pos_combo.currentTextChanged.connect(self.on_axis_config_changed)
+
+        x_axis_row = QHBoxLayout()
+        x_axis_row.addWidget(QLabel("X uses:"))
+        x_axis_row.addWidget(self.x_axis_source_combo)
+        x_axis_row.addWidget(QLabel("X positive:"))
+        x_axis_row.addWidget(self.x_axis_pos_combo)
+        x_axis_row.addStretch()
+        setup_body.addLayout(x_axis_row)
 
         self.y_axis_source_combo = QComboBox()
         self.y_axis_source_combo.addItems(self.AXIS_SOURCE_OPTIONS)
         self.y_axis_source_combo.setCurrentText(self.axis_conv.y_axis_source)
-        self.y_axis_source_combo.currentIndexChanged.connect(self.on_axis_config_changed)
+        self.y_axis_source_combo.currentTextChanged.connect(self.on_axis_config_changed)
 
         self.y_axis_pos_combo = QComboBox()
-        self.y_axis_pos_combo.currentIndexChanged.connect(self.on_axis_config_changed)
+        self.y_axis_pos_combo.currentTextChanged.connect(self.on_axis_config_changed)
 
-        row_axis.addWidget(QLabel("X uses:"))
-        row_axis.addWidget(self.x_axis_source_combo)
-        row_axis.addWidget(QLabel("X positive:"))
-        row_axis.addWidget(self.x_axis_pos_combo)
-        row_axis.addSpacing(14)
-        row_axis.addWidget(QLabel("Y uses:"))
-        row_axis.addWidget(self.y_axis_source_combo)
-        row_axis.addWidget(QLabel("Y positive:"))
-        row_axis.addWidget(self.y_axis_pos_combo)
-        row_axis.addStretch()
-        layout.addLayout(row_axis)
+        y_axis_row = QHBoxLayout()
+        y_axis_row.addWidget(QLabel("Y uses:"))
+        y_axis_row.addWidget(self.y_axis_source_combo)
+        y_axis_row.addWidget(QLabel("Y positive:"))
+        y_axis_row.addWidget(self.y_axis_pos_combo)
+        y_axis_row.addStretch()
+        setup_body.addLayout(y_axis_row)
 
-        # Row 3: Capture controls
-        row2 = QHBoxLayout()
+        # ----------------------------
+        # Run section
+        # ----------------------------
+        self.run_section, run_body = self._make_section("Run Controls")
+        control_layout.addWidget(self.run_section)
+
+        capture_row = QHBoxLayout()
         self.play_btn = QPushButton("Start Capture")
         self.stop_btn = QPushButton("Stop Capture")
         self.open_btn = QPushButton("Open Folder")
@@ -737,31 +629,146 @@ class ScreenshotApp(QMainWindow):
         self.open_btn.clicked.connect(self.open_folder)
         self.clear_roi_btn.clicked.connect(self.clear_roi)
 
-        row2.addWidget(self.play_btn)
-        row2.addWidget(self.stop_btn)
-        row2.addWidget(self.open_btn)
-        row2.addWidget(self.clear_roi_btn)
-        row2.addWidget(self.roi_box_toggle_btn)
-        row2.addStretch()
-        layout.addLayout(row2)
+        capture_row.addWidget(self.play_btn)
+        capture_row.addWidget(self.stop_btn)
+        capture_row.addWidget(self.open_btn)
+        capture_row.addWidget(self.clear_roi_btn)
+        capture_row.addWidget(self.roi_box_toggle_btn)
+        capture_row.addStretch()
+        run_body.addLayout(capture_row)
+
+        pipeline_row = QHBoxLayout()
+        pipeline_row.addWidget(QLabel("Pipeline interval:"))
+
+        self.pipeline_minutes_combo = QComboBox()
+        for m in range(1, 60):
+            self.pipeline_minutes_combo.addItem(f"{m:02d}", m)
+        self.pipeline_minutes_combo.setCurrentIndex(4)
+
+        pipeline_row.addWidget(self.pipeline_minutes_combo)
+        pipeline_row.addWidget(QLabel("min"))
+
+        self.run_pipeline_btn = QPushButton("Run Pipeline Now")
+        self.run_pipeline_btn.clicked.connect(self._run_pipeline_now)
+
+        self.pipeline_auto_btn = QPushButton("Start Auto Pipeline")
+        self.pipeline_auto_btn.setCheckable(True)
+        self.pipeline_auto_btn.clicked.connect(self._toggle_auto_pipeline)
+
+        self.test_mode_checkbox = QCheckBox("Test Mode")
+        self.test_mode_checkbox.setChecked(False)
+        self.test_mode_checkbox.toggled.connect(self._on_test_mode_toggled)
+
+        pipeline_row.addWidget(self.run_pipeline_btn)
+        pipeline_row.addWidget(self.pipeline_auto_btn)
+        pipeline_row.addWidget(self.test_mode_checkbox)
+        pipeline_row.addStretch()
+        run_body.addLayout(pipeline_row)
+
+        tracks_row = QHBoxLayout()
+        self.tracks_toggle_btn = QPushButton("Tracks: OFF")
+        self.tracks_toggle_btn.setCheckable(True)
+        self.tracks_toggle_btn.setChecked(False)
+        self.tracks_toggle_btn.clicked.connect(self._toggle_tracks)
+
+        self.refresh_tracks_btn = QPushButton("Refresh Tracks")
+        self.refresh_tracks_btn.clicked.connect(self._refresh_track_overlay)
+
+        self.clear_tracks_btn = QPushButton("Clear Tracks")
+        self.clear_tracks_btn.clicked.connect(self._clear_tracks)
+
+        self.pipeline_status_label = QLabel("Pipeline: Idle")
+        self.pipeline_status_label.setStyleSheet("font-weight: 600;")
+
+        tracks_row.addWidget(self.tracks_toggle_btn)
+        tracks_row.addWidget(self.refresh_tracks_btn)
+        tracks_row.addWidget(self.clear_tracks_btn)
+        tracks_row.addStretch()
+        tracks_row.addWidget(self.pipeline_status_label)
+        run_body.addLayout(tracks_row)
+
+        # ----------------------------
+        # Status / log
+        # ----------------------------
+        self.status_section, status_body = self._make_section("Status")
+        control_layout.addWidget(self.status_section)
 
         self.status = QLabel("Capture status: Idle")
-        self.status.setStyleSheet(status_style)
-        layout.addWidget(self.status)
+        self.status.setStyleSheet("font-weight: 600;")
+        status_body.addWidget(self.status)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        layout.addWidget(self.log)
+        self.log.setMaximumHeight(110)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        status_body.addWidget(self.log)
 
-        # Initialize
+        control_layout.addStretch()
+
+        # ----------------------------
+        # Visualization panel
+        # ----------------------------
+        self.visualization_panel = QWidget()
+        self.visualization_panel.setMinimumWidth(260)
+        right_layout = QVBoxLayout(self.visualization_panel)
+        right_layout.setContentsMargins(6, 6, 6, 6)
+        right_layout.setSpacing(8)
+
+        vis_section, vis_body = self._make_section("Visualization / Preview")
+        right_layout.addWidget(vis_section)
+
+        self.selected_cell_label = QLabel("Selected cell: none")
+        vis_body.addWidget(self.selected_cell_label)
+
+        self.track_summary_label = QLabel(
+            "Track summary:\n"
+            "- total tracks: --\n"
+            "- fastest track: --\n"
+            "- points loaded: --"
+        )
+        self.track_summary_label.setStyleSheet("padding: 6px; border: 1px solid #ccc; background: white;")
+        vis_body.addWidget(self.track_summary_label)
+
+        self.chart_placeholder = QPlainTextEdit()
+        self.chart_placeholder.setReadOnly(True)
+        self.chart_placeholder.setPlainText(
+            "Insert data visualization here.\n\n"
+            "Later this can hold:\n"
+            "- velocity charts\n"
+            "- displacement charts\n"
+            "- per-cell summaries\n"
+            "- selected-cell detail\n"
+            "- tables / stats"
+        )
+        vis_body.addWidget(self.chart_placeholder)
+
+        right_layout.addStretch()
+
+        self.apply_panel_layout(self.panel_position_combo.currentText())
         self._refresh_axis_direction_choices()
         self._refresh_origin_display()
         self._refresh_axis_display()
         self._refresh_calibration_display()
+        self._apply_mode_visibility()
+    
+    def _apply_mode_visibility(self):
+        running = self.capture_controller.is_running()
 
+        if self.setup_section is not None:
+            self.setup_section.setVisible(not running)
+
+        if self.visualization_panel is not None:
+            self.visualization_panel.setVisible(running)
+
+        if hasattr(self, "log"):
+            self.log.setMaximumHeight(100 if running else 120)
+
+        position = self.panel_position_combo.currentText()
+        self.apply_panel_layout(position)
+    
     def update_ui(self):
-        running = self.timer.isActive()
-        custom_selected = (self.origin_combo.currentText() == "Custom (click in ROI)")
+        running = self.capture_controller.is_running()
+        custom_selected = self.origin_combo.currentText() == "Custom (click in ROI)"
 
         self.select_btn.setEnabled(not running)
         self.minutes_combo.setEnabled(not running)
@@ -788,9 +795,109 @@ class ScreenshotApp(QMainWindow):
         self.status.setText("Capture status: Capturing" if running else "Capture status: Idle")
         self.roi_box_toggle_btn.setText("ROI Box: ON" if self._roi_box_enabled else "ROI Box: OFF")
 
+        pipeline_busy = self._pipeline_worker is not None and self._pipeline_worker.isRunning()
+        auto_pipeline_on = self._pipeline_timer.isActive()
+
+        self.run_pipeline_btn.setEnabled(not pipeline_busy)
+        self.pipeline_minutes_combo.setEnabled(not auto_pipeline_on and not pipeline_busy)
+        self.pipeline_auto_btn.setText("Stop Auto Pipeline" if auto_pipeline_on else "Start Auto Pipeline")
+        self.pipeline_auto_btn.setChecked(auto_pipeline_on)
+
+        self.tracks_toggle_btn.setText("Tracks: ON" if self._tracks_visible else "Tracks: OFF")
+        self.tracks_toggle_btn.setChecked(self._tracks_visible)
+        self.refresh_tracks_btn.setEnabled(running and self.region is not None)
+        self.clear_tracks_btn.setEnabled(running and self.region is not None)
+
+        self._apply_mode_visibility()
+
     def log_msg(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.appendPlainText(f"[{ts}] {msg}")
+
+    def _make_section(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setStyleSheet("""
+            QFrame {
+                border: 1px solid #cfcfcf;
+                border-radius: 6px;
+                background: #f7f7f7;
+            }
+        """)
+
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: 700; border: none; background: transparent;")
+        outer.addWidget(title_label)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        outer.addLayout(body)
+
+        return frame, body
+    
+    def on_panel_position_changed(self, position: str):
+        self.apply_panel_layout(position)
+
+    def apply_panel_layout(self, position: str):
+        if self.main_splitter is None or self.control_panel is None or self.visualization_panel is None:
+            return
+
+        self.control_panel.setParent(None)
+        self.visualization_panel.setParent(None)
+
+        if position == "Left":
+            self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.main_splitter.addWidget(self.control_panel)
+            self.main_splitter.addWidget(self.visualization_panel)
+            self.main_splitter.setSizes([520, 300])
+
+        elif position == "Right":
+            self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.main_splitter.addWidget(self.visualization_panel)
+            self.main_splitter.addWidget(self.control_panel)
+            self.main_splitter.setSizes([300, 520])
+
+        elif position == "Top":
+            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
+            self.main_splitter.addWidget(self.control_panel)
+            self.main_splitter.addWidget(self.visualization_panel)
+            self.main_splitter.setSizes([420, 220])
+
+        elif position == "Bottom":
+            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
+            self.main_splitter.addWidget(self.visualization_panel)
+            self.main_splitter.addWidget(self.control_panel)
+            self.main_splitter.setSizes([220, 420])
+
+    def _on_frame_saved(self, path: Path):
+        self.log_msg(f"Saved {path.name}")
+
+    def _before_capture_hook(self):
+        overlay_was_visible = self._roi_overlay is not None and self._roi_overlay.isVisible()
+        track_was_visible = self._track_overlay is not None and self._track_overlay.isVisible()
+
+        self._overlay_was_visible_before_capture = overlay_was_visible
+        self._track_was_visible_before_capture = track_was_visible
+
+        if overlay_was_visible:
+            self._hide_roi_overlay()
+        if track_was_visible:
+            self._hide_track_overlay()
+        if overlay_was_visible or track_was_visible:
+            QApplication.processEvents()
+
+    def _after_capture_hook(self):
+        if getattr(self, "_overlay_was_visible_before_capture", False):
+            self._show_roi_overlay()
+        if getattr(self, "_track_was_visible_before_capture", False):
+            self._show_track_overlay()
+        if getattr(self, "_overlay_was_visible_before_capture", False) or getattr(self, "_track_was_visible_before_capture", False):
+            QApplication.processEvents()
 
     # ----------------------------
     # ROI overlay helpers
@@ -806,8 +913,7 @@ class ScreenshotApp(QMainWindow):
         self._ensure_overlay()
         self._roi_overlay.set_region_global(self.region)
         self._roi_overlay.set_origin(self.origin)
-        # Keep marker hidden while capturing
-        self._roi_overlay.set_show_origin_marker(not self.timer.isActive())
+        self._roi_overlay.set_show_origin_marker(not self.capture_controller.is_running())
         self._roi_overlay.show()
         self._roi_overlay.raise_()
 
@@ -826,16 +932,165 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     # ----------------------------
+    # Track overlay helpers
+    # ----------------------------
+
+    def _get_roi_dpr(self) -> float:
+        if self.region is None:
+            return 1.0
+        screen = QGuiApplication.screenAt(QPoint(self.region.x, self.region.y))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        return float(screen.devicePixelRatio()) if screen else 1.0
+
+    def _ensure_track_overlay(self):
+        if self._track_overlay is None:
+            self._track_overlay = TrackOverlay()
+
+    def _show_track_overlay(self):
+        if not self._tracks_visible or self.region is None:
+            return
+        self._ensure_track_overlay()
+        self._track_overlay.set_region_global(self.region)
+        self._track_overlay.set_dpr(self._get_roi_dpr())
+        self._track_overlay.show()
+        self._track_overlay.raise_()
+
+    def _hide_track_overlay(self):
+        if self._track_overlay is not None:
+            self._track_overlay.hide()
+
+    def _toggle_tracks(self):
+        self._tracks_visible = self.tracks_toggle_btn.isChecked()
+        if self._tracks_visible:
+            self._show_track_overlay()
+            self.log_msg("Track overlay shown.")
+        else:
+            self._hide_track_overlay()
+            self.log_msg("Track overlay hidden.")
+        self.update_ui()
+
+    def _clear_tracks(self):
+        if self._track_overlay is not None:
+            self._track_overlay.set_tracks({})
+        self.log_msg("Tracks cleared from overlay.")
+
+    def _refresh_track_overlay(self):
+        tracks, frame_size = load_tracks_from_db(self._db_path)
+        if not tracks:
+            self.log_msg(f"No tracks found in database ({self._db_path.name}).")
+            if hasattr(self, "track_summary_label"):
+                self.track_summary_label.setText(
+                    "Track summary:\n"
+                    "- total tracks: 0\n"
+                    "- fastest track: --\n"
+                    "- points loaded: 0"
+                )
+            return
+
+        total_pts = sum(len(v) for v in tracks.values())
+        fastest_id = compute_and_store_velocities(self._db_path)
+
+        msg = f"Loaded {len(tracks)} cell track(s) ({total_pts} points) from DB."
+        if fastest_id is not None:
+            msg += f" Fastest track: cell {fastest_id} (shown in red)."
+        self.log_msg(msg)
+
+        if hasattr(self, "track_summary_label"):
+            self.track_summary_label.setText(
+                f"Track summary:\n"
+                f"- total tracks: {len(tracks)}\n"
+                f"- fastest track: {fastest_id if fastest_id is not None else '--'}\n"
+                f"- points loaded: {total_pts}"
+            )
+
+        self._ensure_track_overlay()
+        self._track_overlay.set_display_scale(
+            self.calibration.units_per_pixel,
+            self.calibration.unit_name,
+        )
+        self._track_overlay.set_tracks(tracks, fastest_cell_id=fastest_id, frame_size=frame_size)
+        if self._tracks_visible and self.region is not None:
+            self._show_track_overlay()
+
+    # ----------------------------
+    # Pipeline execution
+    # ----------------------------
+
+    def _on_test_mode_toggled(self, checked: bool):
+        self._test_mode = checked
+        state = "ON — pipeline will use vid1_frames/" if checked else "OFF — pipeline will use captures/"
+        self.log_msg(f"Test mode {state}")
+
+    def _run_pipeline_now(self):
+        threshold = float(self.threshold_input.text()) if self.threshold_input.text() else None
+        radius = float(self.radius_input.text()) if self.radius_input.text() else None
+        linking = float(self.linking_input.text()) if self.linking_input.text() else None
+        gap = float(self.gap_input.text()) if self.gap_input.text() else None
+        frame_gap = int(self.frame_gap_input.text()) if self.frame_gap_input.text() else None
+
+        subpixel = self.subpixel_checkbox.isChecked()
+        median = self.median_checkbox.isChecked()
+
+        if self._pipeline_worker is not None and self._pipeline_worker.isRunning():
+            self.log_msg("Pipeline already running — skipping.")
+            return
+        batch_path = get_project_root() / "vid1_frames" if self._test_mode else get_output_folder()
+        frame_exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
+        has_frames = batch_path.exists() and any(f.suffix.lower() in frame_exts for f in batch_path.iterdir())
+        if not has_frames:
+            self.log_msg(
+                f"No frames found in {batch_path}. "
+                f"{'Check vid1_frames/ folder.' if self._test_mode else 'Capture some frames first.'}"
+            )
+            return
+        self.log_msg(f"Starting pipeline on {batch_path} …")
+        self.pipeline_status_label.setText("Pipeline: Running")
+        self._pipeline_worker = PipelineWorker(
+            batch_path,
+            threshold=threshold,
+            radius=radius,
+            linking=linking,
+            gap=gap,
+            frame_gap=frame_gap,
+            subpixel=subpixel,
+            median=median
+        )
+
+        self._pipeline_worker.finished.connect(self._on_pipeline_finished)
+        self._pipeline_worker.start()
+        self.update_ui()
+
+    def _on_pipeline_finished(self, success: bool, message: str):
+        self.log_msg(message)
+        self.pipeline_status_label.setText("Pipeline: Done" if success else "Pipeline: Error")
+        self._pipeline_worker = None
+        if success:
+            self._refresh_track_overlay()
+        self.update_ui()
+
+    def _toggle_auto_pipeline(self):
+        if self.pipeline_auto_btn.isChecked():
+            minutes = int(self.pipeline_minutes_combo.currentData())
+            self._pipeline_timer.start(minutes * 60 * 1000)
+            self.log_msg(f"Auto pipeline started (every {minutes} min).")
+        else:
+            self._pipeline_timer.stop()
+            self.log_msg("Auto pipeline stopped.")
+        self.update_ui()
+
+    # ----------------------------
     # ROI selection
     # ----------------------------
 
     def clear_roi(self):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             QMessageBox.information(self, "Capture Running", "Stop capture before clearing the ROI.")
             self.log_msg("Clear ROI blocked: capture is running.")
             return
 
         self.region = None
+        self.capture_controller.set_region(None)
         self.region_label.setText("ROI: (none)")
         self.reset_origin_to_default(silent=True)
         self.clear_calibration(silent=True)
@@ -845,12 +1100,15 @@ class ScreenshotApp(QMainWindow):
             self._roi_overlay.close()
             self._roi_overlay = None
 
+        if self._track_overlay is not None:
+            self._track_overlay.hide()
+
         self.log_msg("ROI cleared.")
         self._write_session_config_json()
         self.update_ui()
 
     def select_area(self):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             return
         self.log_msg("Define ROI: drag to set, release to confirm. Esc cancels. (One monitor only.)")
         self._selector = ScreenSelector()
@@ -885,11 +1143,14 @@ class ScreenshotApp(QMainWindow):
             return
 
         self.region = CaptureRegion(rect_global.x(), rect_global.y(), rect_global.width(), rect_global.height())
+        self.capture_controller.set_region(self.region)
         self.region_label.setText(f"ROI: x={self.region.x}, y={self.region.y}, w={self.region.w}, h={self.region.h}")
         self.log_msg("ROI set (single monitor).")
 
         self.reset_origin_to_default(silent=True)
         self._show_roi_overlay()
+        if self._tracks_visible:
+            self._show_track_overlay()
         self._write_session_config_json()
         self.update_ui()
 
@@ -910,6 +1171,7 @@ class ScreenshotApp(QMainWindow):
             y_norm=max(0.0, min(1.0, float(y_norm))),
             mode_name=mode_name,
         )
+        self.capture_controller.origin = self.origin
         self._refresh_origin_display()
         self._write_session_config_json()
         self.log_msg(f"Origin updated: {self.origin.mode_name} (x={self.origin.x_norm:.3f}, y={self.origin.y_norm:.3f})")
@@ -925,7 +1187,7 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     def on_origin_mode_changed(self):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             return
         mode = str(self.origin_combo.currentText())
 
@@ -949,7 +1211,7 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     def start_origin_picker(self):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             QMessageBox.information(self, "Capture Running", "Stop capture before changing origin.")
             return
         if self.region is None:
@@ -980,53 +1242,109 @@ class ScreenshotApp(QMainWindow):
     # ----------------------------
 
     def _refresh_axis_direction_choices(self):
-        def fill_pos(combo: QComboBox, source: str, desired: str):
+        def fill_pos(combo: QComboBox, source: str, current_value: str, fallback: str):
             combo.blockSignals(True)
             combo.clear()
-            if source == "horizontal":
-                combo.addItems(["right", "left"])
+
+            options = ["right", "left"] if source == "horizontal" else ["down", "up"]
+            combo.addItems(options)
+
+            if current_value in options:
+                combo.setCurrentText(current_value)
             else:
-                combo.addItems(["down", "up"])
-            if desired in [combo.itemText(i) for i in range(combo.count())]:
-                combo.setCurrentText(desired)
+                combo.setCurrentText(fallback)
+
             combo.blockSignals(False)
 
-        fill_pos(self.x_axis_pos_combo, self.x_axis_source_combo.currentText(), self.axis_conv.x_positive)
-        fill_pos(self.y_axis_pos_combo, self.y_axis_source_combo.currentText(), self.axis_conv.y_positive)
+        fill_pos(
+            self.x_axis_pos_combo,
+            self.x_axis_source_combo.currentText(),
+            self.axis_conv.x_positive,
+            "right" if self.x_axis_source_combo.currentText() == "horizontal" else "down",
+        )
+        fill_pos(
+            self.y_axis_pos_combo,
+            self.y_axis_source_combo.currentText(),
+            self.axis_conv.y_positive,
+            "right" if self.y_axis_source_combo.currentText() == "horizontal" else "down",
+        )
 
     def _refresh_axis_display(self):
         self.axis_label.setText(f"Axes: {self.axis_conv.describe()}")
 
-    def on_axis_config_changed(self):
-        if self.timer.isActive():
+    def on_axis_config_changed(self, *_args):
+        if self.capture_controller.is_running():
             return
 
+        sender = self.sender()
+
+        # Read ALL current UI values first
         x_src = str(self.x_axis_source_combo.currentText())
         y_src = str(self.y_axis_source_combo.currentText())
+        x_pos = str(self.x_axis_pos_combo.currentText())
+        y_pos = str(self.y_axis_pos_combo.currentText())
 
+        # Enforce one horizontal axis and one vertical axis
         if x_src == y_src:
-            y_src = "vertical" if x_src == "horizontal" else "horizontal"
-            self.y_axis_source_combo.blockSignals(True)
-            self.y_axis_source_combo.setCurrentText(y_src)
-            self.y_axis_source_combo.blockSignals(False)
+            if sender == self.x_axis_source_combo:
+                y_src = "vertical" if x_src == "horizontal" else "horizontal"
+                self.y_axis_source_combo.blockSignals(True)
+                self.y_axis_source_combo.setCurrentText(y_src)
+                self.y_axis_source_combo.blockSignals(False)
+            elif sender == self.y_axis_source_combo:
+                x_src = "vertical" if y_src == "horizontal" else "horizontal"
+                self.x_axis_source_combo.blockSignals(True)
+                self.x_axis_source_combo.setCurrentText(x_src)
+                self.x_axis_source_combo.blockSignals(False)
+            else:
+                y_src = "vertical" if x_src == "horizontal" else "horizontal"
+                self.y_axis_source_combo.blockSignals(True)
+                self.y_axis_source_combo.setCurrentText(y_src)
+                self.y_axis_source_combo.blockSignals(False)
 
+        # Validate positive directions against the chosen source
+        if x_src == "horizontal":
+            if x_pos not in ("right", "left"):
+                x_pos = "right"
+        else:
+            if x_pos not in ("down", "up"):
+                x_pos = "down"
+
+        if y_src == "horizontal":
+            if y_pos not in ("right", "left"):
+                y_pos = "right"
+        else:
+            if y_pos not in ("down", "up"):
+                y_pos = "down"
+
+        # Store the updated values BEFORE refreshing combos
         self.axis_conv.x_axis_source = x_src
         self.axis_conv.y_axis_source = y_src
+        self.axis_conv.x_positive = x_pos
+        self.axis_conv.y_positive = y_pos
 
+        # Rebuild the positive-direction combo boxes safely
         self._refresh_axis_direction_choices()
 
-        self.axis_conv.x_positive = str(self.x_axis_pos_combo.currentText())
-        self.axis_conv.y_positive = str(self.y_axis_pos_combo.currentText())
+        # Re-apply the chosen positive directions explicitly
+        self.x_axis_pos_combo.blockSignals(True)
+        self.x_axis_pos_combo.setCurrentText(self.axis_conv.x_positive)
+        self.x_axis_pos_combo.blockSignals(False)
+
+        self.y_axis_pos_combo.blockSignals(True)
+        self.y_axis_pos_combo.setCurrentText(self.axis_conv.y_positive)
+        self.y_axis_pos_combo.blockSignals(False)
+
+        self.capture_controller.axis_conv = self.axis_conv
 
         if not self.axis_conv.is_valid():
-            QMessageBox.warning(self, "Invalid axis mapping", "X and Y cannot both use the same direction.")
+            QMessageBox.warning(self, "Invalid axis mapping", "X and Y cannot both use the same source axis.")
             return
 
         self._refresh_axis_display()
         self._write_session_config_json()
         self.log_msg(f"Axis mapping updated: {self.axis_conv.describe()}")
         self.update_ui()
-
     # ----------------------------
     # Calibration
     # ----------------------------
@@ -1044,7 +1362,10 @@ class ScreenshotApp(QMainWindow):
         try:
             payload = self.calibration.to_dict()
             payload["roi"] = None if self.region is None else {
-                "x": self.region.x, "y": self.region.y, "w": self.region.w, "h": self.region.h
+                "x": self.region.x,
+                "y": self.region.y,
+                "w": self.region.w,
+                "h": self.region.h,
             }
             out_path = get_latest_calibration_path(self.output_dir)
             out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1053,12 +1374,13 @@ class ScreenshotApp(QMainWindow):
             self.log_msg(f"WARNING: Could not write calibration JSON: {e}")
 
     def clear_calibration(self, silent: bool = False):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             if not silent:
                 QMessageBox.information(self, "Capture Running", "Stop capture before clearing calibration.")
             return
 
         self.calibration = Calibration(units_per_pixel=1.0, unit_name="px")
+        self.capture_controller.calibration = self.calibration
         self._refresh_calibration_display()
         if not silent:
             self.log_msg("Calibration cleared (scale not set).")
@@ -1066,7 +1388,7 @@ class ScreenshotApp(QMainWindow):
         self.update_ui()
 
     def start_calibration(self):
-        if self.timer.isActive():
+        if self.capture_controller.is_running():
             QMessageBox.information(self, "Capture Running", "Stop capture before calibrating.")
             return
         if self.region is None:
@@ -1119,6 +1441,7 @@ class ScreenshotApp(QMainWindow):
         real_len, unit = res
         units_per_pixel = real_len / pixel_len
         self.calibration = Calibration(units_per_pixel=units_per_pixel, unit_name=unit)
+        self.capture_controller.calibration = self.calibration
         self._refresh_calibration_display()
         self._write_calibration_json()
         self._write_session_config_json()
@@ -1140,7 +1463,10 @@ class ScreenshotApp(QMainWindow):
             payload = {
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "roi": None if self.region is None else {
-                    "x": self.region.x, "y": self.region.y, "w": self.region.w, "h": self.region.h
+                    "x": self.region.x,
+                    "y": self.region.y,
+                    "w": self.region.w,
+                    "h": self.region.h,
                 },
                 "calibration": self.calibration.to_dict(),
                 "origin": self.origin.to_dict(),
@@ -1165,6 +1491,8 @@ class ScreenshotApp(QMainWindow):
         seconds = int(self.seconds_combo.currentData())
         return f"{minutes:02d}:{seconds:02d}"
 
+    
+    
     def start_capture(self):
         if not self.region:
             QMessageBox.warning(self, "No ROI", "Define an ROI first.")
@@ -1175,20 +1503,20 @@ class ScreenshotApp(QMainWindow):
             QMessageBox.warning(self, "Invalid interval", "Choose a non-zero capture interval.")
             return
 
-        # Hide origin marker while capturing
         if self._roi_overlay is not None:
             self._roi_overlay.set_show_origin_marker(False)
 
         self._show_roi_overlay()
-        self.capture()
-        self.timer.start(ms)
+        self.capture_controller.start_capture(ms)
         self.log_msg(f"Capture started (interval {self.interval_label()} mm:ss). Origin marker hidden.")
         self.update_ui()
 
-    def stop_capture(self):
-        self.timer.stop()
+        if self._test_mode:
+            self._run_pipeline_now()
 
-        # Show origin marker again when stopped
+    def stop_capture(self):
+        self.capture_controller.stop_capture()
+
         if self._roi_overlay is not None:
             self._roi_overlay.set_show_origin_marker(True)
 
@@ -1210,7 +1538,7 @@ class ScreenshotApp(QMainWindow):
                     result = subprocess.run(
                         ["explorer.exe", str(self.output_dir)],
                         capture_output=True,
-                        text=True
+                        text=True,
                     )
                     if result.returncode == 0:
                         return
@@ -1218,7 +1546,7 @@ class ScreenshotApp(QMainWindow):
                 result = subprocess.run(
                     ["xdg-open", str(self.output_dir)],
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
                 if result.returncode != 0:
                     self.log_msg("Cannot open file manager (headless environment)")
@@ -1231,53 +1559,22 @@ class ScreenshotApp(QMainWindow):
             self.log_msg(f"Could not open folder: {e}")
             self.log_msg(f"Frames saved to: {self.output_dir}")
 
-    def capture(self):
-        if not self.region:
-            return
-
-        roi_top_left = QPoint(self.region.x, self.region.y)
-        screen = QGuiApplication.screenAt(roi_top_left) or QGuiApplication.primaryScreen()
-        if screen is None:
-            self.log_msg("ERROR: No screen found.")
-            return
-
-        geom = screen.geometry()
-        dpr = float(screen.devicePixelRatio())
-
-        local_x = self.region.x - geom.x()
-        local_y = self.region.y - geom.y()
-
-        px_x = int(round(local_x * dpr))
-        px_y = int(round(local_y * dpr))
-        px_w = int(round(self.region.w * dpr))
-        px_h = int(round(self.region.h * dpr))
-
-        overlay_was_visible = self._roi_overlay is not None and self._roi_overlay.isVisible()
-        if overlay_was_visible:
-            self._hide_roi_overlay()
-            QApplication.processEvents()
-
-        pixmap = screen.grabWindow(0, px_x, px_y, px_w, px_h)
-
-        if overlay_was_visible:
-            self._show_roi_overlay()
-            QApplication.processEvents()
-
-        if pixmap.isNull():
-            self.log_msg("ERROR: Capture failed (pixmap is null).")
-            return
-
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.output_dir / f"frame_{ts}.png"
-        pixmap.save(str(path), "PNG")
-        self.log_msg(f"Saved {path.name}")
-
     def closeEvent(self, event):
         self._selector_stop_safely()
         self._stop_cal_overlay()
+        self._pipeline_timer.stop()
+        self.capture_controller.stop_capture()
+
+        if self._pipeline_worker is not None and self._pipeline_worker.isRunning():
+            self._pipeline_worker.quit()
+            self._pipeline_worker.wait(3000)
+            self._pipeline_worker = None
         if self._roi_overlay is not None:
             self._roi_overlay.close()
             self._roi_overlay = None
+        if self._track_overlay is not None:
+            self._track_overlay.close()
+            self._track_overlay = None
         if self._origin_overlay is not None:
             try:
                 self._origin_overlay.stop()
@@ -1298,72 +1595,180 @@ def main():
 
 
 # =============================================================================
-# Backend helper functions (import these from your tracking code)
+# Backend helper functions
 # =============================================================================
 
-def roi_origin_pixel(roi_w: int, roi_h: int, origin: OriginConfig) -> Tuple[int, int]:
-    """
-    Convert normalized origin (x_norm,y_norm) into ROI-local pixel origin (u0,v0).
-    """
-    if roi_w <= 0 or roi_h <= 0:
-        return 0, 0
-    u0 = int(round(max(0.0, min(1.0, origin.x_norm)) * (roi_w - 1)))
-    v0 = int(round(max(0.0, min(1.0, origin.y_norm)) * (roi_h - 1)))
-    return u0, v0
+def compute_step_velocity(
+    p1: Tuple[float, float, float],
+    p2: Tuple[float, float, float],
+) -> Optional[float]:
+    x1, y1, t1 = p1
+    x2, y2, t2 = p2
+    dt = t2 - t1
+    if dt == 0:
+        return None
+    distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    return distance / abs(dt)
 
 
-def _axis_value(dx: float, dy: float, source: str, positive: str) -> float:
-    """
-    Internal helper: choose dx/dy and apply sign based on positive direction.
-    """
-    if source == "horizontal":
-        base = dx
-        sign = 1.0 if positive == "right" else -1.0  # left => negative
-    else:
-        base = dy
-        sign = 1.0 if positive == "down" else -1.0   # up => negative
-    return sign * base
+def compute_average_track_velocity(
+    track: List[Tuple[float, float, float]],
+) -> Optional[float]:
+    if len(track) < 2:
+        return None
+    velocities = [
+        v
+        for v in (compute_step_velocity(track[i], track[i + 1]) for i in range(len(track) - 1))
+        if v is not None
+    ]
+    if not velocities:
+        return None
+    return sum(velocities) / len(velocities)
 
 
-def pixel_to_user_coords(
-    u: float,
-    v: float,
-    roi_w: int,
-    roi_h: int,
-    origin: OriginConfig,
-    axis: AxisConvention,
-    calibration: Optional[Calibration] = None,
-) -> Dict[str, Any]:
-    """
-    Convert ROI-local pixel coords (u,v) into user's preferred coordinate system.
+def find_fastest_track(
+    tracks: Dict[int, List[Tuple[float, float, float]]],
+) -> Optional[int]:
+    best_id: Optional[int] = None
+    best_vel: float = -1.0
+    for cell_id, pts in tracks.items():
+        avg = compute_average_track_velocity(pts)
+        if avg is not None and avg > best_vel:
+            best_vel = avg
+            best_id = cell_id
+    return best_id
 
-    Returns:
-      - X_px, Y_px in user coordinate pixels
-      - If calibration provided and unit_name != "px", also returns X_units, Y_units.
-    """
-    u0, v0 = roi_origin_pixel(roi_w, roi_h, origin)
-    dx = float(u) - float(u0)
-    dy = float(v) - float(v0)
 
-    if not axis.is_valid():
-        raise ValueError("Invalid AxisConvention: X and Y cannot both use the same source axis.")
+def compute_and_store_velocities(db_path: Path) -> Optional[int]:
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.cursor()
 
-    X_px = _axis_value(dx, dy, axis.x_axis_source, axis.x_positive)
-    Y_px = _axis_value(dx, dy, axis.y_axis_source, axis.y_positive)
+            cur.executescript("""
+                CREATE TABLE IF NOT EXISTS track_step_velocities (
+                    cell_id INTEGER NOT NULL,
+                    from_frame INTEGER NOT NULL,
+                    to_frame INTEGER NOT NULL,
+                    velocity REAL NOT NULL,
+                    PRIMARY KEY (cell_id, from_frame, to_frame)
+                );
+                CREATE TABLE IF NOT EXISTS track_avg_velocities (
+                    cell_id INTEGER PRIMARY KEY,
+                    avg_velocity REAL NOT NULL,
+                    step_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
 
-    out: Dict[str, Any] = {
-        "X_px": X_px,
-        "Y_px": Y_px,
-        "origin_u0": u0,
-        "origin_v0": v0,
-    }
+            cur.execute("""
+                SELECT p.cell_id, p.frame_index,
+                       p.x, p.y,
+                       COALESCE(f.timestamp, p.frame_index) AS t
+                FROM points p
+                LEFT JOIN frames f ON f.frame_index = p.frame_index
+                ORDER BY p.cell_id, p.frame_index
+            """)
+            points_by_cell: Dict[int, List[Tuple[int, float, float, float]]] = {}
+            for cell_id, frame_idx, x, y, t in cur.fetchall():
+                if cell_id not in points_by_cell:
+                    points_by_cell[cell_id] = []
+                points_by_cell[cell_id].append((int(frame_idx), float(x), float(y), float(t)))
 
-    if calibration is not None and calibration.unit_name != "px":
-        out["X_units"] = X_px * float(calibration.units_per_pixel)
-        out["Y_units"] = Y_px * float(calibration.units_per_pixel)
-        out["unit_name"] = calibration.unit_name
+            cells_with_new_steps: set = set()
 
-    return out
+            for cell_id, pts in points_by_cell.items():
+                for i in range(len(pts) - 1):
+                    fi, xi, yi, ti = pts[i]
+                    fj, xj, yj, tj = pts[i + 1]
+                    dt = tj - ti
+                    if dt == 0:
+                        continue
+                    vel = math.sqrt((xj - xi) ** 2 + (yj - yi) ** 2) / abs(dt)
+                    cur.execute("""
+                        INSERT OR IGNORE INTO track_step_velocities
+                            (cell_id, from_frame, to_frame, velocity)
+                        VALUES (?, ?, ?, ?)
+                    """, (cell_id, fi, fj, vel))
+                    if cur.rowcount > 0:
+                        cells_with_new_steps.add(cell_id)
+
+            for cell_id in cells_with_new_steps:
+                cur.execute("""
+                    SELECT AVG(velocity), COUNT(*)
+                    FROM track_step_velocities
+                    WHERE cell_id = ?
+                """, (cell_id,))
+                avg_vel, step_count = cur.fetchone()
+                if avg_vel is None:
+                    continue
+                cur.execute("""
+                    INSERT INTO track_avg_velocities (cell_id, avg_velocity, step_count, updated_at)
+                    VALUES (?, ?, ?, datetime('now'))
+                    ON CONFLICT(cell_id) DO UPDATE SET
+                        avg_velocity = excluded.avg_velocity,
+                        step_count   = excluded.step_count,
+                        updated_at   = excluded.updated_at
+                """, (cell_id, avg_vel, step_count))
+
+            conn.commit()
+
+            cur.execute("SELECT cell_id FROM track_avg_velocities ORDER BY avg_velocity DESC LIMIT 1")
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _read_png_size(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"\x89PNG":
+                return None
+            f.seek(16)
+            w = struct.unpack(">I", f.read(4))[0]
+            h = struct.unpack(">I", f.read(4))[0]
+            return w, h
+    except Exception:
+        return None
+
+
+def load_tracks_from_db(
+    db_path: Path,
+) -> Tuple[Dict[int, List[Tuple[float, float, float]]], Optional[Tuple[int, int]]]:
+    if not db_path.exists():
+        return {}, None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.cell_id, p.x, p.y, COALESCE(f.timestamp, p.frame_index)
+                FROM points p
+                LEFT JOIN frames f ON f.frame_index = p.frame_index
+                ORDER BY p.cell_id, p.frame_index
+            """)
+            result: Dict[int, List[Tuple[float, float, float]]] = {}
+            for cell_id, x, y, t in cursor.fetchall():
+                if cell_id not in result:
+                    result[cell_id] = []
+                result[cell_id].append((float(x), float(y), float(t)))
+
+            frame_size: Optional[Tuple[int, int]] = None
+            cursor.execute("SELECT source_path FROM frames ORDER BY frame_index LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                frame_size = _read_png_size(Path(row[0]))
+
+            return result, frame_size
+        finally:
+            conn.close()
+    except Exception:
+        return {}, None
 
 
 if __name__ == "__main__":

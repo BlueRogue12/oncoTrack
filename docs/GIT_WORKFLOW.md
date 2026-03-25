@@ -25,7 +25,7 @@
 - `verify_setup.sh` - Setup verification
 
 ✅ **Sample Data** (Optional)
-- `vid1_frames_1-3/` - Sample cell images for testing
+- `vid1_frames/` - Sample cell images for testing
 - `data/batches/` - Additional test batches (if you create them)
 
 ✅ **Git Configuration**
@@ -400,7 +400,7 @@ git status
 **They get from git:**
 - ✅ All source code
 - ✅ Documentation
-- ✅ Sample data (`vid1_frames_1-3/`)
+- ✅ Sample data (`vid1_frames/`)
 - ✅ Configuration template (`.env.example`)
 
 **They create locally:**
@@ -424,7 +424,7 @@ cp data/tracking.db ~/shared/tracking_$(date +%Y%m%d).db
 ### Option 2: Share CSV Exports
 ```bash
 # Run with export
-./run_test.sh --batch vid1_frames_1-3 --export
+./run_test.sh --batch vid1_frames --export
 
 # Share the CSVs
 cp output/exports/*.csv ~/shared/
@@ -433,7 +433,7 @@ cp output/exports/*.csv ~/shared/
 ### Option 3: Share Visualization
 ```bash
 # Generate visualization
-./run_test.sh --batch vid1_frames_1-3 --visualize
+./run_test.sh --batch vid1_frames --visualize
 
 # Share the image
 cp output/visualizations/tracks.png ~/shared/
@@ -487,7 +487,7 @@ git status
 | Documentation (`*.md`) | ✅ Yes | Shared with team |
 | Configuration template (`.env.example`) | ✅ Yes | Template for team |
 | Personal config (`.env`) | ❌ No | Each person's paths are different |
-| Sample data (`vid1_frames_1-3/`) | ✅ Yes | For testing |
+| Sample data (`vid1_frames/`) | ✅ Yes | For testing |
 | Generated data (`data/`, `output/`) | ❌ No | Each person generates their own |
 | Captures (`captures/`) | ❌ No | Personal workspace |
 | Virtual env (`venv/`) | ❌ No | Each person creates their own |
