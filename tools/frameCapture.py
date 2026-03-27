@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QSizePolicy,
     QFrame,
+    QGridLayout,
+    QScrollArea,
 )
 
 from src.capture_controller import CaptureController
@@ -388,6 +390,7 @@ class ScreenshotApp(QMainWindow):
         self.status_section: Optional[QWidget] = None
 
         self.build_ui()
+        self._current_layout_mode = None
         self.update_ui()
         self._write_session_config_json()
 
@@ -409,24 +412,29 @@ class ScreenshotApp(QMainWindow):
         # Control panel
         # ----------------------------
         self.control_panel = QWidget()
-        self.control_panel.setMinimumWidth(420)
+        self.control_panel.setMinimumWidth(300)
+
         control_layout = QVBoxLayout(self.control_panel)
         control_layout.setContentsMargins(6, 6, 6, 6)
         control_layout.setSpacing(8)
+        self.control_panel.setMinimumHeight(600)
+
+        self.control_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.control_scroll = QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.control_scroll.setFrameShape(QFrame.NoFrame)
+        self.control_scroll.setWidget(self.control_panel)
+        self.main_splitter.addWidget(self.control_scroll)
 
         # Top controls section
         top_section, top_body = self._make_section("Session")
         control_layout.addWidget(top_section)
 
         panel_row = QHBoxLayout()
-        panel_row.addWidget(QLabel("Panel position:"))
 
-        self.panel_position_combo = QComboBox()
-        self.panel_position_combo.addItems(["Left", "Right", "Top", "Bottom"])
-        self.panel_position_combo.setCurrentText("Right")
-        self.panel_position_combo.currentTextChanged.connect(self.on_panel_position_changed)
-
-        panel_row.addWidget(self.panel_position_combo)
         panel_row.addStretch()
         top_body.addLayout(panel_row)
 
@@ -456,7 +464,38 @@ class ScreenshotApp(QMainWindow):
         # Setup section
         # ----------------------------
         self.setup_section, setup_body = self._make_section("Setup")
+        self.setup_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         control_layout.addWidget(self.setup_section)
+
+        # --- Threshold ---
+        self.threshold_input = QLineEdit()
+        self.threshold_input.setPlaceholderText("Threshold")
+        self.threshold_input.setFixedWidth(80)
+
+        # --- Radius ---
+        self.radius_input = QLineEdit()
+        self.radius_input.setPlaceholderText("Radius")
+        self.radius_input.setFixedWidth(80)
+
+        self.linking_input = QLineEdit()
+        self.linking_input.setPlaceholderText("Linking")
+        self.linking_input.setFixedWidth(80)
+
+        self.gap_input = QLineEdit()
+        self.gap_input.setPlaceholderText("Gap")
+        self.gap_input.setFixedWidth(80)
+
+        self.frame_gap_input = QLineEdit()
+        self.frame_gap_input.setPlaceholderText("FrameGap")
+        self.frame_gap_input.setFixedWidth(80)
+
+        # --- Subpixel ---
+        self.subpixel_checkbox = QCheckBox("Subpixel")
+        self.subpixel_checkbox.setChecked(True)
+
+        # --- Median filter ---
+        self.median_checkbox = QCheckBox("Median")
+        self.median_checkbox.setChecked(False)
 
         interval_row = QHBoxLayout()
         interval_row.addWidget(QLabel("Capture interval:"))
@@ -479,65 +518,36 @@ class ScreenshotApp(QMainWindow):
         interval_row.addStretch()
         setup_body.addLayout(interval_row)
 
-        settings_row = QHBoxLayout()
+        # Grid Section
+        grid = QGridLayout()
+        grid.setSpacing(4)
 
-        # --- Threshold ---
-        self.threshold_input = QLineEdit()
-        self.threshold_input.setPlaceholderText("Threshold")
-        self.threshold_input.setFixedWidth(80)
-        settings_row.addWidget(QLabel("Threshold:"))
-        settings_row.addWidget(self.threshold_input)
+        # Row 0 — Threshold + Radius
+        grid.addWidget(QLabel("Threshold:"), 0, 0)
+        grid.addWidget(self.threshold_input, 0, 1)
 
-        # --- Radius ---
-        self.radius_input = QLineEdit()
-        self.radius_input.setPlaceholderText("Radius")
-        self.radius_input.setFixedWidth(80)
-        settings_row.addWidget(QLabel("Radius:"))
-        settings_row.addWidget(self.radius_input)
+        grid.addWidget(QLabel("Radius:"), 0, 2)
+        grid.addWidget(self.radius_input, 0, 3)
 
-        # --- Subpixel ---
-        self.subpixel_checkbox = QCheckBox("Subpixel")
-        self.subpixel_checkbox.setChecked(True)
-        settings_row.addWidget(self.subpixel_checkbox)
+        # Row 1 — Linking / Gap / Frame Gap
+        grid.addWidget(QLabel("Linking:"), 1, 0)
+        grid.addWidget(self.linking_input, 1, 1)
 
-        # --- Median filter ---
-        self.median_checkbox = QCheckBox("Median")
-        self.median_checkbox.setChecked(False)
-        settings_row.addWidget(self.median_checkbox)
+        grid.addWidget(QLabel("Gap:"), 1, 2)
+        grid.addWidget(self.gap_input, 1, 3)
 
-        tracking_row = QHBoxLayout()
+        grid.addWidget(QLabel("Frame Gap:"), 1, 4)
+        grid.addWidget(self.frame_gap_input, 1, 5)
 
-        self.linking_input = QLineEdit()
-        self.linking_input.setPlaceholderText("Linking")
-        self.linking_input.setFixedWidth(80)
+        # Row 2 — Checkboxes
+        grid.addWidget(self.subpixel_checkbox, 2, 0)
+        grid.addWidget(self.median_checkbox, 2, 1)
 
-        self.gap_input = QLineEdit()
-        self.gap_input.setPlaceholderText("Gap")
-        self.gap_input.setFixedWidth(80)
+        # Make it stretch properly
+        for col in range(6):
+            grid.setColumnStretch(col, 1)
 
-        self.frame_gap_input = QLineEdit()
-        self.frame_gap_input.setPlaceholderText("FrameGap")
-        self.frame_gap_input.setFixedWidth(80)
-
-        tracking_row.addWidget(QLabel("Linking:"))
-        tracking_row.addWidget(self.linking_input)
-
-        tracking_row.addWidget(QLabel("Gap:"))
-        tracking_row.addWidget(self.gap_input)
-
-        tracking_row.addWidget(QLabel("Frame Gap:"))
-        tracking_row.addWidget(self.frame_gap_input)
-
-        tracking_row.addStretch()
-
-        setup_body.addLayout(tracking_row)
-
-        settings_row.addStretch()
-        setup_body.addLayout(settings_row)
-
-        settings_row.addStretch()
-
-        setup_body.addLayout(settings_row)
+        setup_body.addLayout(grid)
 
         row1 = QHBoxLayout()
         self.select_btn = QPushButton("Define / Redefine ROI")
@@ -610,8 +620,15 @@ class ScreenshotApp(QMainWindow):
         # ----------------------------
         # Run section
         # ----------------------------
+        self.collapse_btn = QPushButton("Collapse")
+        self.collapse_btn.setCheckable(True)
+        self.collapse_btn.clicked.connect(self.toggle_collapsed)
         self.run_section, run_body = self._make_section("Run Controls")
         control_layout.addWidget(self.run_section)
+        self.dark_mode_btn = QPushButton("Dark Mode")
+        self.dark_mode_btn.setCheckable(True)
+        self.dark_mode_btn.clicked.connect(self.toggle_dark_mode)
+        run_body.addWidget(self.dark_mode_btn)
 
         capture_row = QHBoxLayout()
         self.play_btn = QPushButton("Start Capture")
@@ -687,6 +704,14 @@ class ScreenshotApp(QMainWindow):
         tracks_row.addWidget(self.pipeline_status_label)
         run_body.addLayout(tracks_row)
 
+        self.snap_top_btn = QPushButton("Snap Top Half")
+        self.snap_top_btn.clicked.connect(self.snap_to_top_half)
+        run_body.addWidget(self.snap_top_btn)
+
+        self.snap_bottom_btn = QPushButton("Snap Bottom Half")
+        self.snap_bottom_btn.clicked.connect(self.snap_to_bottom_half)
+        run_body.addWidget(self.snap_bottom_btn)
+
         # ----------------------------
         # Status / log
         # ----------------------------
@@ -699,11 +724,9 @@ class ScreenshotApp(QMainWindow):
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(110)
-        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.log.setMinimumHeight(60)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         status_body.addWidget(self.log)
-
-        control_layout.addStretch()
 
         # ----------------------------
         # Visualization panel
@@ -744,13 +767,45 @@ class ScreenshotApp(QMainWindow):
 
         right_layout.addStretch()
 
-        self.apply_panel_layout(self.panel_position_combo.currentText())
+        self.apply_panel_layout("Right")
         self._refresh_axis_direction_choices()
         self._refresh_origin_display()
         self._refresh_axis_display()
         self._refresh_calibration_display()
         self._apply_mode_visibility()
+
+    def snap_to_top_half(self):
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+
+        x = geo.x()
+        y = geo.y()
+        w = geo.width()
+        h = geo.height() // 2
+
+        self.setGeometry(x, y, w, h)
     
+    def snap_to_bottom_half(self):
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+
+        x = geo.x()
+        y = geo.y() + geo.height() // 2
+        w = geo.width()
+        h = geo.height() // 2
+
+        self.setGeometry(x, y, w, h)
+
+    def toggle_collapsed(self):
+        if self.collapse_btn.isChecked():
+            self.control_panel.setMaximumWidth(60)
+            self.control_panel.setMinimumWidth(60)
+            self.collapse_btn.setText("Expand")
+        else:
+            self.control_panel.setMaximumWidth(16777215)
+            self.control_panel.setMinimumWidth(420)
+            self.collapse_btn.setText("Collapse")
+
     def _apply_mode_visibility(self):
         running = self.capture_controller.is_running()
 
@@ -762,10 +817,8 @@ class ScreenshotApp(QMainWindow):
 
         if hasattr(self, "log"):
             self.log.setMaximumHeight(100 if running else 120)
-
-        position = self.panel_position_combo.currentText()
-        self.apply_panel_layout(position)
     
+
     def update_ui(self):
         running = self.capture_controller.is_running()
         custom_selected = self.origin_combo.currentText() == "Custom (click in ROI)"
@@ -810,24 +863,27 @@ class ScreenshotApp(QMainWindow):
 
         self._apply_mode_visibility()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+    def toggle_dark_mode(self):
+        if self.dark_mode_btn.isChecked():
+            QApplication.instance().setStyleSheet(get_dark_stylesheet())
+            self.dark_mode_btn.setText("Light Mode")
+        else:
+            QApplication.instance().setStyleSheet("")
+            self.dark_mode_btn.setText("Dark Mode")
+
     def log_msg(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.appendPlainText(f"[{ts}] {msg}")
 
     def _make_section(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.StyledPanel)
-        frame.setStyleSheet("""
-            QFrame {
-                border: 1px solid #cfcfcf;
-                border-radius: 6px;
-                background: #f7f7f7;
-            }
-        """)
 
         outer = QVBoxLayout(frame)
-        outer.setContentsMargins(10, 10, 10, 10)
-        outer.setSpacing(8)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(4)
 
         title_label = QLabel(title)
         title_label.setStyleSheet("font-weight: 700; border: none; background: transparent;")
@@ -835,44 +891,29 @@ class ScreenshotApp(QMainWindow):
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(8)
-        outer.addLayout(body)
+        body.setSpacing(4)
+        outer.addLayout(body, 1)
+
+        # collapse behavior (FIXED)
+        title_label.mousePressEvent = lambda _: body.setVisible(not body.isVisible())
 
         return frame, body
-    
-    def on_panel_position_changed(self, position: str):
-        self.apply_panel_layout(position)
 
     def apply_panel_layout(self, position: str):
-        if self.main_splitter is None or self.control_panel is None or self.visualization_panel is None:
+        if self.main_splitter is None:
             return
 
-        self.control_panel.setParent(None)
-        self.visualization_panel.setParent(None)
+        self.control_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.visualization_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumHeight(200)
 
         if position == "Left":
-            self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
-            self.main_splitter.addWidget(self.control_panel)
+            self.main_splitter.addWidget(self.control_scroll)
             self.main_splitter.addWidget(self.visualization_panel)
-            self.main_splitter.setSizes([520, 300])
 
-        elif position == "Right":
-            self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
+        else:  # Right default
             self.main_splitter.addWidget(self.visualization_panel)
-            self.main_splitter.addWidget(self.control_panel)
-            self.main_splitter.setSizes([300, 520])
-
-        elif position == "Top":
-            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
-            self.main_splitter.addWidget(self.control_panel)
-            self.main_splitter.addWidget(self.visualization_panel)
-            self.main_splitter.setSizes([420, 220])
-
-        elif position == "Bottom":
-            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
-            self.main_splitter.addWidget(self.visualization_panel)
-            self.main_splitter.addWidget(self.control_panel)
-            self.main_splitter.setSizes([220, 420])
+            self.main_splitter.addWidget(self.control_scroll)
 
     def _on_frame_saved(self, path: Path):
         self.log_msg(f"Saved {path.name}")
@@ -1593,7 +1634,52 @@ def main():
     window.show()
     sys.exit(app.exec())
 
+def get_dark_stylesheet():
+        return """
+        QWidget {
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+        }
 
+        QFrame {
+            border: 1px solid #3a3a3a;
+            border-radius: 6px;
+        }
+
+        QLabel {
+            color: #e0e0e0;
+        }
+
+        QPushButton {
+            background-color: #2d2d2d;
+            border: 1px solid #444;
+            padding: 6px;
+            border-radius: 4px;
+        }
+
+        QPushButton:hover {
+            background-color: #3a3a3a;
+        }
+
+        QPushButton:pressed {
+            background-color: #505050;
+        }
+
+        QLineEdit, QComboBox, QPlainTextEdit {
+            background-color: #2a2a2a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            padding: 4px;
+        }
+
+        QScrollArea {
+            background-color: transparent;
+        }
+
+        QCheckBox {
+            spacing: 6px;
+        }
+        """
 # =============================================================================
 # Backend helper functions
 # =============================================================================
