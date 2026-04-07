@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -97,12 +98,13 @@ class AxisConvention:
 # ----------------------------
 
 def get_project_root() -> Path:
-    return Path(__file__).parent.parent
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
 
 
 def get_output_folder() -> Path:
-    project_root = get_project_root()
-    out = project_root / "captures"
+    out = get_project_root() / "captures"
     out.mkdir(parents=True, exist_ok=True)
     return out
 
