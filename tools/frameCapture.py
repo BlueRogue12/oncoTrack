@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QToolTip,
     QDialog,
-    QSplitter,
     QSizePolicy,
     QFrame,
     QGridLayout,
@@ -382,7 +381,7 @@ class ScreenshotApp(QMainWindow):
             y_axis_source="horizontal",
             y_positive="left",
         )
-        self.main_splitter: Optional[QSplitter] = None
+        self.main_splitter = None  # unused; kept for compatibility
         self.control_panel: Optional[QWidget] = None
         self.visualization_panel: Optional[QWidget] = None
         self.setup_section: Optional[QWidget] = None
@@ -402,11 +401,7 @@ class ScreenshotApp(QMainWindow):
         root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.setSpacing(8)
 
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)
-        root_layout.addWidget(self.main_splitter)
+        self.main_splitter = None  # no longer used; visualization is in control scroll area
 
         # ----------------------------
         # Control panel
@@ -427,7 +422,7 @@ class ScreenshotApp(QMainWindow):
         self.control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.control_scroll.setFrameShape(QFrame.NoFrame)
         self.control_scroll.setWidget(self.control_panel)
-        self.main_splitter.addWidget(self.control_scroll)
+        root_layout.addWidget(self.control_scroll)
 
         # Top controls section
         top_section, top_body = self._make_section("Session")
@@ -732,7 +727,6 @@ class ScreenshotApp(QMainWindow):
         # Visualization panel
         # ----------------------------
         self.visualization_panel = QWidget()
-        self.visualization_panel.setMinimumWidth(260)
         right_layout = QVBoxLayout(self.visualization_panel)
         right_layout.setContentsMargins(6, 6, 6, 6)
         right_layout.setSpacing(8)
@@ -767,7 +761,7 @@ class ScreenshotApp(QMainWindow):
 
         right_layout.addStretch()
 
-        self.apply_panel_layout("Right")
+        control_layout.addWidget(self.visualization_panel)
         self._refresh_axis_direction_choices()
         self._refresh_origin_display()
         self._refresh_axis_display()
@@ -900,20 +894,7 @@ class ScreenshotApp(QMainWindow):
         return frame, body
 
     def apply_panel_layout(self, position: str):
-        if self.main_splitter is None:
-            return
-
-        self.control_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.visualization_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(200)
-
-        if position == "Left":
-            self.main_splitter.addWidget(self.control_scroll)
-            self.main_splitter.addWidget(self.visualization_panel)
-
-        else:  # Right default
-            self.main_splitter.addWidget(self.visualization_panel)
-            self.main_splitter.addWidget(self.control_scroll)
+        pass  # visualization panel is now embedded in the control scroll area
 
     def _on_frame_saved(self, path: Path):
         self.log_msg(f"Saved {path.name}")
