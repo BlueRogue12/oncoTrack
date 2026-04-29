@@ -1,110 +1,153 @@
 # OncoTrack
 
-Incremental cell tracking pipeline using Fiji/TrackMate headless for detection and Python for orchestration.
+A desktop application for capturing microscope frames and tracking cell movement over time. OncoTrack overlays live cell tracks on your screen, runs automated detection via Fiji/TrackMate, and exports position data for further analysis.
 
-## Quick Start
+**Authors:**
+- Sarah Thach — st13460@georgiasouthern.edu
+- Sydney Boles — sb35329@georgiasouthern.edu
+- Phillip Mejia — om00913@georgiasouthern.edu
 
-```bash
-# 1. Run setup (creates .env file and installs dependencies)
-./scripts/setup_env.sh
+---
 
-# 2. Configure your paths in .env
-nano .env   # Set FIJI_PATH and FRAMES_PATH
+## Getting Started
 
-# 3. Test with your data
-./scripts/run_test.sh --visualize --export
+### Requirements
+
+- Windows 10 or 11
+- Fiji (ImageJ) with TrackMate — included in the provided zip
+
+### Installation
+
+1. Unzip `OncoTrack.zip` to any folder on your machine
+2. The unzipped folder should look like this:
+
+```
+OncoTrack/
+├── OncoTrack.exe
+├── Fiji/
+│   └── fiji-windows-x64.exe
+├── _internal/
+└── (captures/ and data/ are created automatically on first run)
 ```
 
-See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for configuration details, [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md) for team onboarding, and [docs/QUICKSTART.md](docs/QUICKSTART.md) for full setup guide.
+3. Double-click `OncoTrack.exe` to launch
 
-## Components
+No Python installation or configuration required.
 
-### 1. Frame Capture (Existing Tool)
+---
 
-Qt GUI for capturing microscope frames from screen regions.
+## Using the Application
 
-**Installation:**
-```bash
-# Install just PySide6 for the capture tool
-pip install PySide6
+### 1. Select a Capture Region
 
-# Or install all project dependencies
-pip install -r requirements.txt
+When the app opens, click **Select Region** and drag over the area of your screen showing the microscope feed. This defines the region that will be captured and tracked.
+
+### 2. Calibrate (Optional)
+
+Use the **Calibration** panel to set the scale of your image (e.g., microns per pixel) and axis orientation. This ensures exported coordinates are in real-world units.
+
+### 3. Capture Frames
+
+Click **Capture** to take a screenshot of the selected region. Frames are saved automatically to a `captures/` folder next to `OncoTrack.exe`. You can capture frames manually or set up continuous capture.
+
+### 4. Run the Tracking Pipeline
+
+Click **Run Pipeline** to analyze captured frames. The app will:
+
+- Send frames to Fiji/TrackMate for cell detection
+- Stitch detected tracks across frames into persistent cell identities
+- Store results in a local database (`data/tracking.db`)
+
+This runs in the background — the status bar will indicate when it completes.
+
+### 5. View Tracks
+
+Once the pipeline finishes, cell tracks are drawn as overlays directly on the capture region. Each cell is assigned a unique color. The fastest-moving track is highlighted in red.
+
+Hovering over a track dot shows a tooltip with:
+- Cell ID
+- Step velocity (in your calibrated units per second, if calibrated)
+
+Tracks update automatically after each pipeline run.
+
+---
+
+## Output Files
+
+All output is saved next to `OncoTrack.exe`:
+
+| Path | Contents |
+|---|---|
+| `captures/` | Captured frame images (PNG) |
+| `data/tracking.db` | SQLite database with all cell positions and track data |
+| `captures/latest_calibration.json` | Saved calibration settings |
+| `captures/latest_session_config.json` | Saved session settings (region, axis convention, etc.) |
+
+The database can be opened with any SQLite viewer (e.g., [DB Browser for SQLite](https://sqlitebrowser.org/)). Key tables:
+
+- **cells** — one row per tracked cell
+- **points** — x/y position of each cell per frame
+- **track_step_velocities** — per-step velocity between frames
+- **track_avg_velocities** — average velocity per cell
+
+---
+
+## Adjusting Tracking Parameters
+
+If cells are not being detected correctly, tracking parameters can be tuned. Open `_internal/src/config.py` in a text editor and adjust:
+
+```python
+radius: float = 5.0                  # Expected cell radius in pixels — increase for larger cells
+threshold: float = 5.0               # Detection sensitivity — lower to detect more spots
+linking_max_distance: float = 50.0   # Max distance a cell can move between frames
+max_frame_gap: int = 2               # Max frames a cell can disappear and still be linked
 ```
 
-**Run:**
+Restart the application after saving changes.
+
+---
+
+## Troubleshooting
+
+**App opens but pipeline does not run**
+- Confirm `Fiji/fiji-windows-x64.exe` exists inside the `OncoTrack/` folder
+- Check that at least one frame has been captured before running the pipeline
+
+**No cells detected**
+- Lower the `threshold` value in `config.py` (e.g., try `2.0`)
+- Increase `radius` if your cells are larger than ~5 pixels
+
+**Tracks look broken or fragmented**
+- Increase `linking_max_distance` if cells move far between frames
+- Increase `max_frame_gap` if cells occasionally disappear for a frame or two
+
+**App crashes on launch**
+- Ensure `OncoTrack.exe` is run from inside the `OncoTrack/` folder, not moved out on its own
+
+---
+
+## Development Setup
+
+Requires Python 3.11+ and Fiji installed locally.
+
 ```bash
-python tools/frameCapture.py
-```
+# Clone and set up
+git clone https://github.com/BlueRogue12/oncoTrack.git
+cd oncoTrack
+python -m venv venv
+venv\Scripts\activate
 
-**Output Location:**
-Frames are automatically saved to `captures/` folder in the project root (gitignored).
-
-**Status**: Complete, simplified for team use
-
-### 2. Tracking Pipeline (New)
-
-Incremental cell tracking with persistent IDs and SQLite storage.
-
-```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Set Fiji path in .env (or use environment variable)
-nano .env
+# Set Fiji path
+cp .env.example .env   # then edit .env and set FIJI_PATH
 
-# Run pipeline on sample data
-./scripts/run_test.sh --batch vid1_frames --visualize --export
-
-# Or use Python directly
-python -m src.main --batch vid1_frames --visualize --export
+# Run the app
+python tools/frameCapture.py
 ```
 
-**Status**: Complete implementation
-
-## Documentation
-
-📚 **[Full Documentation →](docs/)**
-
-Quick links:
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) - 5-minute setup guide
-- [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) - Branching strategy and git best practices
-- [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md) - Team onboarding guide
-- [docs/CAPTURE_WORKFLOW.md](docs/CAPTURE_WORKFLOW.md) - Frame capture & processing workflow
-- [docs/README_PIPELINE.md](docs/README_PIPELINE.md) - Full pipeline documentation
-- [docs/PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) - Technical overview
-
-## Scripts
-
-🔧 **[Utility Scripts →](scripts/)**
-
-- [scripts/setup_env.sh](scripts/setup_env.sh) - One-time environment setup
-- [scripts/run_test.sh](scripts/run_test.sh) - Run pipeline tests
-- [scripts/verify_setup.sh](scripts/verify_setup.sh) - Verify installation
-- [scripts/clear_db.py](scripts/clear_db.py) - Clear all tracking data (run before each new experiment)
-
-### Clear the database
-
-Run this before starting a new experiment session to wipe all tracking data while keeping the schema intact:
-
-```bash
-python scripts/clear_db.py
+**`.env` example:**
 ```
-
-## Architecture
-
+FIJI_PATH=C:\path\to\fiji-windows-x64.exe
 ```
-Frame Producer → Batch Directories → Tracking Pipeline → SQLite + Visualizations
-(frameCapture.py)                    (src/main.py)
-```
-
-## Features
-
-- ✅ Incremental processing with overlap window
-- ✅ Persistent cell IDs via stitching
-- ✅ Fiji/TrackMate headless execution
-- ✅ SQLite persistence
-- ✅ Track visualization with OpenCV
-- ✅ Master CSV export
-- ✅ Unit tests
-- ✅ Comprehensive documentation
