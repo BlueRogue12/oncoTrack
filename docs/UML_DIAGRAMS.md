@@ -329,6 +329,40 @@ sequenceDiagram
 
 ---
 
+## 3b. Pipeline Sequence Diagram (Simplified — Poster Version)
+
+```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '25px'}}}%%
+sequenceDiagram
+    actor User
+    participant T as Tracker
+    participant DB as Store
+    participant TM as TrackMate
+
+    User->>T: process_batch()
+
+    Note over T,DB: Steps 1–2 — Ingest Frames
+    T->>DB: register frames
+    DB-->>T: finalized frame
+
+    Note over T,TM: Steps 3–4 — Run TrackMate
+    T->>TM: run on tail window
+    TM-->>T: parsed tracks
+
+    Note over T,DB: Steps 5–6 — Stitch Tracks
+    alt First batch
+        T->>DB: create cells & store spots
+    else Subsequent batch
+        T->>DB: stitch & extend tracks
+    end
+
+    Note over T,DB: Step 7 — Finalize
+    T->>DB: set finalized frame
+    T-->>User: batch complete
+```
+
+---
+
 ## 4. Use-Case Diagram
 
 The use-case diagram identifies the primary interactions between the Researcher and the OncoTrack system. The Researcher initiates all six core workflows: uploading microscopy video, preprocessing frames, detecting and tracking cells, generating trajectories, computing migration metrics, and exporting results. Together these use cases capture the full lifecycle of a cell-tracking experiment, from raw video input through to quantitative output. The diagram is intentionally high-level to highlight system scope rather than implementation detail.

@@ -44,3 +44,11 @@ htmlcov/
 tmp/
 temp/
 .claude/
+
+# Packaging (PyInstaller build artifacts and deliverable)
+build/
+dist/
+*.zip
+build.bat
+launcher.py
+oncotrack.spec
